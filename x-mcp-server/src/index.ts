@@ -541,26 +541,77 @@ async function main() {
 
   // Health check endpoint
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', service: 'x-mcp-server' });
+    res.json({
+      status: 'ok',
+      service: 'x-mcp-server',
+      version: '1.0.0',
+      endpoints: {
+        health: '/health',
+        sse: '/sse',
+        message: '/message',
+        tools: '/tools'
+      }
+    });
+  });
+
+  // List available tools endpoint (for testing)
+  app.get('/tools', async (_req, res) => {
+    res.json({
+      tools: TOOLS.map(t => ({
+        name: t.name,
+        description: t.description
+      }))
+    });
   });
 
   // SSE endpoint for MCP
   app.get('/sse', async (req, res) => {
-    console.error('New SSE connection established');
+    console.error('[SSE] New connection request from:', req.ip);
 
-    const transport = new SSEServerTransport('/message', res);
-    await server.connect(transport);
+    try {
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
 
-    // Handle client disconnect
-    req.on('close', () => {
-      console.error('SSE connection closed');
-    });
+      console.error('[SSE] Headers sent, creating transport...');
+
+      const transport = new SSEServerTransport('/message', res);
+      await server.connect(transport);
+
+      console.error('[SSE] Transport connected successfully');
+
+      // Handle client disconnect
+      req.on('close', () => {
+        console.error('[SSE] Connection closed by client');
+      });
+
+      req.on('error', (err) => {
+        console.error('[SSE] Connection error:', err);
+      });
+    } catch (error) {
+      console.error('[SSE] Error establishing connection:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to establish SSE connection' });
+      }
+    }
   });
 
   // Message endpoint for MCP
   app.post('/message', async (req, res) => {
-    // This will be handled by the SSE transport
-    res.status(200).end();
+    console.error('[MESSAGE] Received message:', JSON.stringify(req.body, null, 2));
+
+    try {
+      // The SSE transport should handle this
+      // Just acknowledge receipt
+      res.status(200).json({ status: 'received' });
+    } catch (error) {
+      console.error('[MESSAGE] Error handling message:', error);
+      res.status(500).json({ error: 'Failed to process message' });
+    }
   });
 
   app.listen(PORT, () => {
