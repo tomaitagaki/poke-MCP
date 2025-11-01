@@ -3,7 +3,7 @@ services:
     name: x-mcp-server
     env: node
     region: oregon
-    plan: starter
+    plan: free  # Change to 'starter' ($7/mo) for always-on service
     # Point to the subdirectory where the code lives
     rootDir: x-mcp-server
     buildCommand: npm install && npm run build
