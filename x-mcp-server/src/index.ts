@@ -569,16 +569,7 @@ async function main() {
     console.error('[SSE] New connection request from:', req.ip);
 
     try {
-      // Set SSE headers
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-      });
-
-      console.error('[SSE] Headers sent, creating transport...');
-
+      // Let SSEServerTransport handle the headers
       const transport = new SSEServerTransport('/message', res);
       await server.connect(transport);
 
