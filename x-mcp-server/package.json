@@ -1,0 +1,33 @@
+{
+  "name": "x-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for X (Twitter) API integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "watch": "tsc --watch"
+  },
+  "keywords": [
+    "mcp",
+    "twitter",
+    "x",
+    "api"
+  ],
+  "author": "toma",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "twitter-api-v2": "^1.17.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

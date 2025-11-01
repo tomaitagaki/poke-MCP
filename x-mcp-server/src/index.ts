@@ -1,0 +1,541 @@
+#!/usr/bin/env node
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  Tool,
+} from '@modelcontextprotocol/sdk/types.js';
+import { TwitterApi, ApiResponseError } from 'twitter-api-v2';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// Initialize Twitter client
+const client = new TwitterApi({
+  appKey: process.env.X_API_KEY || '',
+  appSecret: process.env.X_API_SECRET || '',
+  accessToken: process.env.X_ACCESS_TOKEN || '',
+  accessSecret: process.env.X_ACCESS_TOKEN_SECRET || '',
+});
+
+const rwClient = client.readWrite;
+
+// Define available tools
+const TOOLS: Tool[] = [
+  {
+    name: 'post_tweet',
+    description: 'Post a new tweet to your X account. Can include text, reply to another tweet, or create a thread.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'The text content of the tweet (max 280 characters)',
+        },
+        reply_to_tweet_id: {
+          type: 'string',
+          description: 'Optional: ID of the tweet to reply to',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'get_bookmarks',
+    description: 'Get your saved/bookmarked tweets. Returns up to 100 bookmarks per request with pagination support.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of bookmarks to return (5-100, default 10)',
+          default: 10,
+        },
+        pagination_token: {
+          type: 'string',
+          description: 'Optional: Token for pagination to get next set of results',
+        },
+      },
+    },
+  },
+  {
+    name: 'add_bookmark',
+    description: 'Add a tweet to your bookmarks/saved list',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to bookmark',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'remove_bookmark',
+    description: 'Remove a tweet from your bookmarks',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to remove from bookmarks',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'get_home_timeline',
+    description: 'Get tweets from your home timeline (tweets from accounts you follow)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of tweets to return (5-100, default 10)',
+          default: 10,
+        },
+        pagination_token: {
+          type: 'string',
+          description: 'Optional: Token for pagination',
+        },
+      },
+    },
+  },
+  {
+    name: 'get_user_tweets',
+    description: 'Get tweets from your own timeline or another user',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        user_id: {
+          type: 'string',
+          description: 'Optional: User ID to get tweets from (defaults to authenticated user)',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of tweets to return (5-100, default 10)',
+          default: 10,
+        },
+        pagination_token: {
+          type: 'string',
+          description: 'Optional: Token for pagination',
+        },
+      },
+    },
+  },
+  {
+    name: 'like_tweet',
+    description: 'Like a tweet',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to like',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'unlike_tweet',
+    description: 'Unlike a tweet',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to unlike',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'retweet',
+    description: 'Retweet a tweet',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to retweet',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'unretweet',
+    description: 'Remove a retweet',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to unretweet',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'get_tweet',
+    description: 'Get details about a specific tweet',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet to retrieve',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'search_tweets',
+    description: 'Search for tweets using a query',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query (supports X search operators)',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of tweets to return (10-100, default 10)',
+          default: 10,
+        },
+      },
+      required: ['query'],
+    },
+  },
+];
+
+// Create MCP server
+const server = new Server(
+  {
+    name: 'x-mcp-server',
+    version: '1.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// List available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return { tools: TOOLS };
+});
+
+// Handle tool calls
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  try {
+    const { name, arguments: args } = request.params;
+
+    switch (name) {
+      case 'post_tweet': {
+        const { text, reply_to_tweet_id } = args as {
+          text: string;
+          reply_to_tweet_id?: string;
+        };
+
+        const tweetData: any = { text };
+        if (reply_to_tweet_id) {
+          tweetData.reply = { in_reply_to_tweet_id: reply_to_tweet_id };
+        }
+
+        const tweet = await rwClient.v2.tweet(tweetData);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                tweet_id: tweet.data.id,
+                text: tweet.data.text,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'get_bookmarks': {
+        const { max_results = 10, pagination_token } = args as {
+          max_results?: number;
+          pagination_token?: string;
+        };
+
+        const me = await rwClient.v2.me();
+        const bookmarks = await rwClient.v2.bookmarks({
+          max_results: Math.min(Math.max(max_results, 5), 100),
+          pagination_token,
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                bookmarks: bookmarks.data.data || [],
+                meta: bookmarks.data.meta,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'add_bookmark': {
+        const { tweet_id } = args as { tweet_id: string };
+        const result = await rwClient.v2.bookmark(tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                bookmarked: result.data.bookmarked,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'remove_bookmark': {
+        const { tweet_id } = args as { tweet_id: string };
+        const result = await rwClient.v2.deleteBookmark(tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                bookmarked: result.data.bookmarked,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'get_home_timeline': {
+        const { max_results = 10, pagination_token } = args as {
+          max_results?: number;
+          pagination_token?: string;
+        };
+
+        const me = await rwClient.v2.me();
+        const timeline = await rwClient.v2.userTimeline(me.data.id, {
+          max_results: Math.min(Math.max(max_results, 5), 100),
+          pagination_token,
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                tweets: timeline.data.data || [],
+                meta: timeline.data.meta,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'get_user_tweets': {
+        const { user_id, max_results = 10, pagination_token } = args as {
+          user_id?: string;
+          max_results?: number;
+          pagination_token?: string;
+        };
+
+        const userId = user_id || (await rwClient.v2.me()).data.id;
+        const tweets = await rwClient.v2.userTimeline(userId, {
+          max_results: Math.min(Math.max(max_results, 5), 100),
+          pagination_token,
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                tweets: tweets.data.data || [],
+                meta: tweets.data.meta,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'like_tweet': {
+        const { tweet_id } = args as { tweet_id: string };
+        const me = await rwClient.v2.me();
+        const result = await rwClient.v2.like(me.data.id, tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                liked: result.data.liked,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'unlike_tweet': {
+        const { tweet_id } = args as { tweet_id: string };
+        const me = await rwClient.v2.me();
+        const result = await rwClient.v2.unlike(me.data.id, tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                liked: result.data.liked,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'retweet': {
+        const { tweet_id } = args as { tweet_id: string };
+        const me = await rwClient.v2.me();
+        const result = await rwClient.v2.retweet(me.data.id, tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                retweeted: result.data.retweeted,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'unretweet': {
+        const { tweet_id } = args as { tweet_id: string };
+        const me = await rwClient.v2.me();
+        const result = await rwClient.v2.unretweet(me.data.id, tweet_id);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                retweeted: result.data.retweeted,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'get_tweet': {
+        const { tweet_id } = args as { tweet_id: string };
+        const tweet = await rwClient.v2.singleTweet(tweet_id, {
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics', 'conversation_id'],
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(tweet.data, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'search_tweets': {
+        const { query, max_results = 10 } = args as {
+          query: string;
+          max_results?: number;
+        };
+
+        const results = await rwClient.v2.search(query, {
+          max_results: Math.min(Math.max(max_results, 10), 100),
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                tweets: results.data.data || [],
+                meta: results.data.meta,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Unknown tool: ${name}`,
+            },
+          ],
+          isError: true,
+        };
+    }
+  } catch (error: any) {
+    if (error instanceof ApiResponseError) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `X API Error: ${error.message}\nCode: ${error.code}\nData: ${JSON.stringify(error.data, null, 2)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error: ${error.message || 'Unknown error occurred'}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+});
+
+// Start server
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('X MCP Server running on stdio');
+}
+
+main().catch((error) => {
+  console.error('Fatal error:', error);
+  process.exit(1);
+});
