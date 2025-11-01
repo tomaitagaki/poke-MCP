@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -8,6 +8,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { TwitterApi, ApiResponseError } from 'twitter-api-v2';
 import dotenv from 'dotenv';
+import express from 'express';
+import cors from 'cors';
 
 dotenv.config();
 
@@ -528,11 +530,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start server
+// Start HTTP server with SSE
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('X MCP Server running on stdio');
+  const app = express();
+  const PORT = process.env.PORT || 3000;
+
+  // Enable CORS for all origins
+  app.use(cors());
+  app.use(express.json());
+
+  // Health check endpoint
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', service: 'x-mcp-server' });
+  });
+
+  // SSE endpoint for MCP
+  app.get('/sse', async (req, res) => {
+    console.error('New SSE connection established');
+
+    const transport = new SSEServerTransport('/message', res);
+    await server.connect(transport);
+
+    // Handle client disconnect
+    req.on('close', () => {
+      console.error('SSE connection closed');
+    });
+  });
+
+  // Message endpoint for MCP
+  app.post('/message', async (req, res) => {
+    // This will be handled by the SSE transport
+    res.status(200).end();
+  });
+
+  app.listen(PORT, () => {
+    console.error(`X MCP Server running on http://localhost:${PORT}`);
+    console.error(`SSE endpoint: http://localhost:${PORT}/sse`);
+    console.error(`Health check: http://localhost:${PORT}/health`);
+  });
 }
 
 main().catch((error) => {
