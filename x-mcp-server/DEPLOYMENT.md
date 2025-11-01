@@ -42,13 +42,13 @@
 1. **Create Web Service**
    - Dashboard → "New +" → "Web Service"
    - Connect your GitHub repository
-   - Select `x-mcp-server` directory (if monorepo)
 
 2. **Configure Build Settings**
    - **Name**: `x-mcp-server`
    - **Environment**: Node
    - **Region**: Choose closest to you (e.g., Oregon)
    - **Branch**: `main`
+   - **Root Directory**: `x-mcp-server` ⚠️ **Important for monorepo!**
    - **Build Command**: `npm install && npm run build`
    - **Start Command**: `npm start`
 

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: x-mcp-server
+    env: node
+    region: oregon
+    plan: starter
+    # Point to the subdirectory where the code lives
+    rootDir: x-mcp-server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: X_API_KEY
+        sync: false
+      - key: X_API_SECRET
+        sync: false
+      - key: X_ACCESS_TOKEN
+        sync: false
+      - key: X_ACCESS_TOKEN_SECRET
+        sync: false
+      - key: X_BEARER_TOKEN
+        sync: false

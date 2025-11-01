@@ -121,14 +121,14 @@ npm start
 
 ### Using render.yaml (Infrastructure as Code)
 
-This repo includes a `render.yaml` file for automated deployment:
+This repo includes a `render.yaml` at the root for automated deployment:
 
 ```bash
-# Deploy using Render Blueprint
-render deploy
+# From the repo root, deploy using Render
+# Render will auto-detect render.yaml and use rootDir: x-mcp-server
 ```
 
-Or connect your repo to Render and it will automatically detect the `render.yaml` configuration.
+The `render.yaml` is located at `/render.yaml` (repo root) and points to this subdirectory using `rootDir: x-mcp-server`.
 
 ### Docker Deployment
 
