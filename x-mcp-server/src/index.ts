@@ -530,6 +530,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// Store transports by session ID
+const transports: Map<string, SSEServerTransport> = new Map();
+
 // Start HTTP server with SSE
 async function main() {
   const app = express();
@@ -548,6 +551,17 @@ async function main() {
       console.error('[SSE] STEP 2: Creating SSEServerTransport...');
       const transport = new SSEServerTransport('/message', res);
 
+      // Store the transport by session ID for message routing
+      const sessionId = transport.sessionId;
+      transports.set(sessionId, transport);
+      console.error('[SSE] Session ID:', sessionId);
+
+      // Set up onclose handler to clean up transport when closed
+      transport.onclose = () => {
+        console.error(`[SSE] ⚠️  Transport closed for session ${sessionId}`);
+        transports.delete(sessionId);
+      };
+
       console.error('[SSE] STEP 3: Connecting server to transport...');
       await server.connect(transport);
 
@@ -557,6 +571,7 @@ async function main() {
       // Handle client disconnect
       req.on('close', () => {
         console.error('[SSE] ⚠️  Connection closed by client');
+        transports.delete(sessionId);
       });
 
       req.on('error', (err) => {
@@ -615,16 +630,37 @@ async function main() {
     console.error('='.repeat(60));
     console.error('[MESSAGE] POST request received');
     console.error('[MESSAGE] Content-Type:', req.headers['content-type']);
+    console.error('[MESSAGE] Query params:', JSON.stringify(req.query, null, 2));
     console.error('[MESSAGE] Body:', JSON.stringify(req.body, null, 2));
 
+    // Extract session ID from URL query parameter
+    const sessionId = req.query.sessionId as string;
+
+    if (!sessionId) {
+      console.error('[MESSAGE] ❌ No session ID provided in request URL');
+      res.status(400).json({ error: 'Missing sessionId parameter' });
+      return;
+    }
+
+    const transport = transports.get(sessionId);
+
+    if (!transport) {
+      console.error(`[MESSAGE] ❌ No active transport found for session ID: ${sessionId}`);
+      console.error(`[MESSAGE] Active sessions: ${Array.from(transports.keys()).join(', ')}`);
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
     try {
-      // The SSE transport should handle this
-      // Just acknowledge receipt
-      console.error('[MESSAGE] ✅ Acknowledging message receipt');
-      res.status(200).json({ status: 'received' });
+      console.error(`[MESSAGE] ✅ Routing to transport for session ${sessionId}`);
+      // Handle the POST message with the transport
+      await transport.handlePostMessage(req, res, req.body);
     } catch (error: any) {
       console.error('[MESSAGE] ❌ Error handling message:', error.message);
-      res.status(500).json({ error: 'Failed to process message' });
+      console.error('[MESSAGE] Error stack:', error.stack);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to process message' });
+      }
     }
   });
 
