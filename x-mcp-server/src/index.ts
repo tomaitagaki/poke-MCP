@@ -535,6 +535,52 @@ async function main() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
+  // SSE endpoint for MCP - MUST be before any middleware
+  // This is because middleware can set headers, and SSEServerTransport needs raw response
+  app.get('/sse', async (req, res) => {
+    console.error('='.repeat(60));
+    console.error('[SSE] STEP 1: New connection request');
+    console.error('[SSE] Client IP:', req.ip);
+    console.error('[SSE] User-Agent:', req.headers['user-agent']);
+    console.error('[SSE] Accept:', req.headers['accept']);
+
+    try {
+      console.error('[SSE] STEP 2: Creating SSEServerTransport...');
+      const transport = new SSEServerTransport('/message', res);
+
+      console.error('[SSE] STEP 3: Connecting server to transport...');
+      await server.connect(transport);
+
+      console.error('[SSE] STEP 4: ✅ Transport connected successfully!');
+      console.error('[SSE] Connection is now active and waiting for messages');
+
+      // Handle client disconnect
+      req.on('close', () => {
+        console.error('[SSE] ⚠️  Connection closed by client');
+      });
+
+      req.on('error', (err) => {
+        console.error('[SSE] ❌ Connection error:', err);
+      });
+    } catch (error: any) {
+      console.error('[SSE] ❌ STEP FAILED: Error establishing connection');
+      console.error('[SSE] Error name:', error.name);
+      console.error('[SSE] Error message:', error.message);
+      console.error('[SSE] Error stack:', error.stack);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to establish SSE connection', details: error.message });
+      }
+    }
+  });
+
+  // Debug middleware - log all requests (except SSE which is already handled)
+  app.use((req, res, next) => {
+    console.error(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    console.error(`  Headers:`, JSON.stringify(req.headers, null, 2));
+    console.error(`  Query:`, JSON.stringify(req.query, null, 2));
+    next();
+  });
+
   // Enable CORS for all origins
   app.use(cors());
   app.use(express.json());
@@ -564,51 +610,35 @@ async function main() {
     });
   });
 
-  // SSE endpoint for MCP
-  app.get('/sse', async (req, res) => {
-    console.error('[SSE] New connection request from:', req.ip);
-
-    try {
-      // Let SSEServerTransport handle the headers
-      const transport = new SSEServerTransport('/message', res);
-      await server.connect(transport);
-
-      console.error('[SSE] Transport connected successfully');
-
-      // Handle client disconnect
-      req.on('close', () => {
-        console.error('[SSE] Connection closed by client');
-      });
-
-      req.on('error', (err) => {
-        console.error('[SSE] Connection error:', err);
-      });
-    } catch (error) {
-      console.error('[SSE] Error establishing connection:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to establish SSE connection' });
-      }
-    }
-  });
-
   // Message endpoint for MCP
   app.post('/message', async (req, res) => {
-    console.error('[MESSAGE] Received message:', JSON.stringify(req.body, null, 2));
+    console.error('='.repeat(60));
+    console.error('[MESSAGE] POST request received');
+    console.error('[MESSAGE] Content-Type:', req.headers['content-type']);
+    console.error('[MESSAGE] Body:', JSON.stringify(req.body, null, 2));
 
     try {
       // The SSE transport should handle this
       // Just acknowledge receipt
+      console.error('[MESSAGE] ✅ Acknowledging message receipt');
       res.status(200).json({ status: 'received' });
-    } catch (error) {
-      console.error('[MESSAGE] Error handling message:', error);
+    } catch (error: any) {
+      console.error('[MESSAGE] ❌ Error handling message:', error.message);
       res.status(500).json({ error: 'Failed to process message' });
     }
   });
 
   app.listen(PORT, () => {
-    console.error(`X MCP Server running on http://localhost:${PORT}`);
+    console.error('='.repeat(60));
+    console.error('🚀 X MCP Server Started Successfully!');
+    console.error('='.repeat(60));
+    console.error(`Server URL: http://localhost:${PORT}`);
     console.error(`SSE endpoint: http://localhost:${PORT}/sse`);
     console.error(`Health check: http://localhost:${PORT}/health`);
+    console.error(`Tools list: http://localhost:${PORT}/tools`);
+    console.error('='.repeat(60));
+    console.error('Waiting for connections...');
+    console.error('');
   });
 }
 
