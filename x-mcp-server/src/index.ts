@@ -13,15 +13,41 @@ import cors from 'cors';
 
 dotenv.config();
 
-// Initialize Twitter client
-const client = new TwitterApi({
-  appKey: process.env.X_API_KEY || '',
-  appSecret: process.env.X_API_SECRET || '',
-  accessToken: process.env.X_ACCESS_TOKEN || '',
-  accessSecret: process.env.X_ACCESS_TOKEN_SECRET || '',
+// OAuth 2.0 token storage (in-memory for now)
+interface TokenStore {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  tokenType?: string;
+}
+
+const tokenStore: TokenStore = {};
+
+// OAuth 2.0 client for authorization flow
+const oauth2Client = new TwitterApi({
+  clientId: process.env.X_CLIENT_ID || '',
+  clientSecret: process.env.X_CLIENT_SECRET || '',
 });
 
-const rwClient = client.readWrite;
+// Function to get Twitter client (will use OAuth 2.0 if available, fallback to OAuth 1.0a)
+function getTwitterClient(): TwitterApi {
+  if (tokenStore.accessToken) {
+    console.error('[AUTH] Using OAuth 2.0 token');
+    return new TwitterApi(tokenStore.accessToken);
+  }
+
+  // Fallback to OAuth 1.0a if no OAuth 2.0 token
+  console.error('[AUTH] Falling back to OAuth 1.0a');
+  return new TwitterApi({
+    appKey: process.env.X_API_KEY || '',
+    appSecret: process.env.X_API_SECRET || '',
+    accessToken: process.env.X_ACCESS_TOKEN || '',
+    accessSecret: process.env.X_ACCESS_TOKEN_SECRET || '',
+  });
+}
+
+// Initialize with OAuth 1.0a by default (will be replaced after OAuth 2.0 auth)
+let rwClient = getTwitterClient().readWrite;
 
 // Define available tools
 const TOOLS: Tool[] = [
@@ -241,6 +267,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
+    // Refresh client to use latest OAuth 2.0 token if available
+    rwClient = getTwitterClient().readWrite;
+
     const { name, arguments: args } = request.params;
 
     switch (name) {
@@ -606,13 +635,141 @@ async function main() {
       status: 'ok',
       service: 'x-mcp-server',
       version: '1.0.0',
+      authenticated: !!tokenStore.accessToken,
+      authType: tokenStore.accessToken ? 'OAuth 2.0' : 'OAuth 1.0a',
       endpoints: {
         health: '/health',
         sse: '/sse',
         message: '/message',
-        tools: '/tools'
+        tools: '/tools',
+        authorize: '/authorize',
+        callback: '/callback'
       }
     });
+  });
+
+  // OAuth 2.0 Authorization endpoint
+  app.get('/authorize', async (_req, res) => {
+    try {
+      console.error('[OAUTH] Starting OAuth 2.0 authorization flow...');
+
+      const callbackURL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
+
+      // Generate authorization URL with PKCE
+      const { url, codeVerifier, state } = oauth2Client.generateOAuth2AuthLink(
+        callbackURL,
+        {
+          scope: [
+            'tweet.read',
+            'tweet.write',
+            'users.read',
+            'bookmark.read',
+            'bookmark.write',
+            'like.read',
+            'like.write',
+            'offline.access'
+          ],
+        }
+      );
+
+      // Store code verifier and state for callback validation
+      // In production, use Redis or database
+      (global as any).oauth2State = { codeVerifier, state };
+
+      console.error('[OAUTH] Authorization URL generated');
+      console.error('[OAUTH] Redirect to:', url);
+
+      // Redirect user to X authorization page
+      res.redirect(url);
+    } catch (error: any) {
+      console.error('[OAUTH] Error generating auth URL:', error);
+      res.status(500).json({
+        error: 'Failed to start authorization',
+        details: error.message
+      });
+    }
+  });
+
+  // OAuth 2.0 Callback endpoint
+  app.get('/callback', async (req, res) => {
+    try {
+      console.error('[OAUTH] Callback received');
+      console.error('[OAUTH] Query params:', req.query);
+
+      const { code, state } = req.query;
+
+      if (!code || typeof code !== 'string') {
+        throw new Error('Missing authorization code');
+      }
+
+      // Retrieve stored state and code verifier
+      const storedData = (global as any).oauth2State;
+
+      if (!storedData) {
+        throw new Error('No OAuth state found. Please restart authorization.');
+      }
+
+      if (state !== storedData.state) {
+        throw new Error('State mismatch - possible CSRF attack');
+      }
+
+      console.error('[OAUTH] Exchanging code for token...');
+
+      const callbackURL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
+
+      // Exchange code for access token
+      const {
+        client: loggedClient,
+        accessToken,
+        refreshToken,
+        expiresIn
+      } = await oauth2Client.loginWithOAuth2({
+        code,
+        codeVerifier: storedData.codeVerifier,
+        redirectUri: callbackURL,
+      });
+
+      // Store tokens
+      tokenStore.accessToken = accessToken;
+      tokenStore.refreshToken = refreshToken;
+      tokenStore.expiresIn = expiresIn;
+      tokenStore.tokenType = 'Bearer';
+
+      // Update the global client
+      rwClient = loggedClient.readWrite;
+
+      // Clean up stored state
+      delete (global as any).oauth2State;
+
+      console.error('[OAUTH] ✅ Successfully authenticated with OAuth 2.0!');
+      console.error('[OAUTH] Access token obtained (expires in', expiresIn, 'seconds)');
+
+      res.send(`
+        <html>
+          <head><title>Authorization Successful</title></head>
+          <body style="font-family: system-ui; max-width: 600px; margin: 100px auto; text-align: center;">
+            <h1 style="color: #1DA1F2;">✅ Authorization Successful!</h1>
+            <p>Your X MCP Server is now authenticated with OAuth 2.0.</p>
+            <p>You can close this window and return to Poke.</p>
+            <p style="margin-top: 40px; color: #666; font-size: 14px;">
+              Access granted for: bookmarks, tweets, likes, and more.
+            </p>
+          </body>
+        </html>
+      `);
+    } catch (error: any) {
+      console.error('[OAUTH] ❌ Callback error:', error);
+      res.status(500).send(`
+        <html>
+          <head><title>Authorization Failed</title></head>
+          <body style="font-family: system-ui; max-width: 600px; margin: 100px auto; text-align: center;">
+            <h1 style="color: #e00;">❌ Authorization Failed</h1>
+            <p>Error: ${error.message}</p>
+            <p><a href="/authorize">Try again</a></p>
+          </body>
+        </html>
+      `);
+    }
   });
 
   // List available tools endpoint (for testing)
