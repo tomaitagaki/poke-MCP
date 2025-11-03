@@ -13,15 +13,31 @@ import cors from 'cors';
 
 dotenv.config();
 
-// OAuth 2.0 token storage (in-memory for now)
+// OAuth 2.0 token storage (persisted via environment variables)
 interface TokenStore {
   accessToken?: string;
   refreshToken?: string;
   expiresIn?: number;
   tokenType?: string;
+  expiresAt?: number; // Timestamp when token expires
 }
 
-const tokenStore: TokenStore = {};
+// Initialize token store from environment variables if available
+const tokenStore: TokenStore = {
+  accessToken: process.env.OAUTH2_ACCESS_TOKEN,
+  refreshToken: process.env.OAUTH2_REFRESH_TOKEN,
+  expiresIn: process.env.OAUTH2_EXPIRES_IN ? parseInt(process.env.OAUTH2_EXPIRES_IN) : undefined,
+  tokenType: process.env.OAUTH2_TOKEN_TYPE || 'Bearer',
+  expiresAt: process.env.OAUTH2_EXPIRES_AT ? parseInt(process.env.OAUTH2_EXPIRES_AT) : undefined,
+};
+
+// Check if tokens are loaded from env
+if (tokenStore.accessToken && tokenStore.refreshToken) {
+  console.error('[AUTH] ✅ OAuth 2.0 tokens loaded from environment variables');
+  console.error('[AUTH] Token expires at:', tokenStore.expiresAt ? new Date(tokenStore.expiresAt).toISOString() : 'unknown');
+} else {
+  console.error('[AUTH] ⚠️  No OAuth 2.0 tokens found. Visit /authorize to authenticate.');
+}
 
 // OAuth 2.0 client for authorization flow
 const oauth2Client = new TwitterApi({
@@ -29,8 +45,56 @@ const oauth2Client = new TwitterApi({
   clientSecret: process.env.X_CLIENT_SECRET || '',
 });
 
+// Function to refresh OAuth 2.0 access token if expired
+async function refreshAccessTokenIfNeeded(): Promise<void> {
+  if (!tokenStore.refreshToken) {
+    return;
+  }
+
+  // Check if token is expired or about to expire (within 5 minutes)
+  const now = Date.now();
+  const expiresAt = tokenStore.expiresAt || 0;
+  const fiveMinutes = 5 * 60 * 1000;
+
+  if (expiresAt > now + fiveMinutes) {
+    // Token is still valid
+    return;
+  }
+
+  try {
+    console.error('[AUTH] 🔄 Access token expired or expiring soon, refreshing...');
+
+    const {
+      client: refreshedClient,
+      accessToken,
+      refreshToken,
+      expiresIn,
+    } = await oauth2Client.refreshOAuth2Token(tokenStore.refreshToken);
+
+    // Update token store
+    tokenStore.accessToken = accessToken;
+    tokenStore.refreshToken = refreshToken || tokenStore.refreshToken;
+    tokenStore.expiresIn = expiresIn;
+    tokenStore.expiresAt = Date.now() + (expiresIn * 1000);
+
+    console.error('[AUTH] ✅ Token refreshed successfully!');
+    console.error('[AUTH] New token expires at:', new Date(tokenStore.expiresAt).toISOString());
+    console.error('[AUTH] 📋 Copy these to your Render environment variables:');
+    console.error(`OAUTH2_ACCESS_TOKEN=${accessToken}`);
+    console.error(`OAUTH2_REFRESH_TOKEN=${tokenStore.refreshToken}`);
+    console.error(`OAUTH2_EXPIRES_IN=${expiresIn}`);
+    console.error(`OAUTH2_EXPIRES_AT=${tokenStore.expiresAt}`);
+  } catch (error: any) {
+    console.error('[AUTH] ❌ Failed to refresh token:', error.message);
+    console.error('[AUTH] You may need to re-authorize at /authorize');
+  }
+}
+
 // Function to get Twitter client (will use OAuth 2.0 if available, fallback to OAuth 1.0a)
-function getTwitterClient(): TwitterApi {
+async function getTwitterClient(): Promise<TwitterApi> {
+  // Try to refresh token if needed
+  await refreshAccessTokenIfNeeded();
+
   if (tokenStore.accessToken) {
     console.error('[AUTH] Using OAuth 2.0 token');
     return new TwitterApi(tokenStore.accessToken);
@@ -46,8 +110,8 @@ function getTwitterClient(): TwitterApi {
   });
 }
 
-// Initialize with OAuth 1.0a by default (will be replaced after OAuth 2.0 auth)
-let rwClient = getTwitterClient().readWrite;
+// Initialize rwClient (will be set by getTwitterClient() when needed)
+let rwClient: any;
 
 // Define available tools
 const TOOLS: Tool[] = [
@@ -268,7 +332,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     // Refresh client to use latest OAuth 2.0 token if available
-    rwClient = getTwitterClient().readWrite;
+    const client = await getTwitterClient();
+    rwClient = client.readWrite;
 
     const { name, arguments: args } = request.params;
 
@@ -631,12 +696,23 @@ async function main() {
 
   // Health check endpoint
   app.get('/health', (_req, res) => {
+    const now = Date.now();
+    const expiresAt = tokenStore.expiresAt;
+    const isExpired = expiresAt ? expiresAt < now : false;
+    const timeUntilExpiry = expiresAt ? Math.max(0, expiresAt - now) : 0;
+
     res.json({
       status: 'ok',
       service: 'x-mcp-server',
       version: '1.0.0',
       authenticated: !!tokenStore.accessToken,
       authType: tokenStore.accessToken ? 'OAuth 2.0' : 'OAuth 1.0a',
+      tokenStatus: tokenStore.accessToken ? {
+        hasRefreshToken: !!tokenStore.refreshToken,
+        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+        isExpired,
+        timeUntilExpirySeconds: Math.floor(timeUntilExpiry / 1000),
+      } : null,
       endpoints: {
         health: '/health',
         sse: '/sse',
@@ -730,9 +806,11 @@ async function main() {
       });
 
       // Store tokens
+      const expiresAt = Date.now() + (expiresIn * 1000);
       tokenStore.accessToken = accessToken;
       tokenStore.refreshToken = refreshToken;
       tokenStore.expiresIn = expiresIn;
+      tokenStore.expiresAt = expiresAt;
       tokenStore.tokenType = 'Bearer';
 
       // Update the global client
@@ -743,17 +821,73 @@ async function main() {
 
       console.error('[OAUTH] ✅ Successfully authenticated with OAuth 2.0!');
       console.error('[OAUTH] Access token obtained (expires in', expiresIn, 'seconds)');
+      console.error('[OAUTH] Token expires at:', new Date(expiresAt).toISOString());
+      console.error('');
+      console.error('[OAUTH] 📋 IMPORTANT: Copy these environment variables to Render to persist tokens:');
+      console.error('='.repeat(80));
+      console.error(`OAUTH2_ACCESS_TOKEN=${accessToken}`);
+      console.error(`OAUTH2_REFRESH_TOKEN=${refreshToken}`);
+      console.error(`OAUTH2_EXPIRES_IN=${expiresIn}`);
+      console.error(`OAUTH2_EXPIRES_AT=${expiresAt}`);
+      console.error(`OAUTH2_TOKEN_TYPE=Bearer`);
+      console.error('='.repeat(80));
 
       res.send(`
         <html>
-          <head><title>Authorization Successful</title></head>
-          <body style="font-family: system-ui; max-width: 600px; margin: 100px auto; text-align: center;">
-            <h1 style="color: #1DA1F2;">✅ Authorization Successful!</h1>
-            <p>Your X MCP Server is now authenticated with OAuth 2.0.</p>
-            <p>You can close this window and return to Poke.</p>
-            <p style="margin-top: 40px; color: #666; font-size: 14px;">
+          <head>
+            <title>Authorization Successful</title>
+            <style>
+              body { font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; }
+              h1 { color: #1DA1F2; }
+              .success { background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; }
+              .warning { background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107; }
+              .code-block { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 12px; }
+              .copy-btn { background: #1DA1F2; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+              .copy-btn:hover { background: #1a8cd8; }
+            </style>
+          </head>
+          <body>
+            <h1>✅ Authorization Successful!</h1>
+
+            <div class="success">
+              <strong>Your X MCP Server is now authenticated with OAuth 2.0!</strong><br>
               Access granted for: bookmarks, tweets, likes, and more.
+            </div>
+
+            <div class="warning">
+              <h3>⚠️ Important: Persist Your Tokens</h3>
+              <p>To avoid re-authorizing after every deployment, add these environment variables to your Render dashboard:</p>
+
+              <div class="code-block" id="envVars">OAUTH2_ACCESS_TOKEN=${accessToken}
+OAUTH2_REFRESH_TOKEN=${refreshToken}
+OAUTH2_EXPIRES_IN=${expiresIn}
+OAUTH2_EXPIRES_AT=${expiresAt}
+OAUTH2_TOKEN_TYPE=Bearer</div>
+
+              <button class="copy-btn" onclick="copyToClipboard()">📋 Copy to Clipboard</button>
+
+              <h4>Steps:</h4>
+              <ol>
+                <li>Go to your Render dashboard</li>
+                <li>Select your x-mcp-server service</li>
+                <li>Go to <strong>Environment</strong> tab</li>
+                <li>Add each variable above</li>
+                <li>Click <strong>Save Changes</strong></li>
+              </ol>
+            </div>
+
+            <p style="text-align: center; margin-top: 40px; color: #666;">
+              You can now close this window and return to Poke.
             </p>
+
+            <script>
+              function copyToClipboard() {
+                const text = document.getElementById('envVars').innerText;
+                navigator.clipboard.writeText(text).then(() => {
+                  alert('✅ Copied to clipboard! Paste these into Render environment variables.');
+                });
+              }
+            </script>
           </body>
         </html>
       `);
