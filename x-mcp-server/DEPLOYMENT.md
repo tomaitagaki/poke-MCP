@@ -28,10 +28,9 @@
 
 3. **Configure Environment Variables**
    The following environment variables will be requested:
-   - `X_API_KEY`
-   - `X_API_SECRET`
-   - `X_ACCESS_TOKEN`
-   - `X_ACCESS_TOKEN_SECRET`
+   - `X_CLIENT_ID` - Your OAuth 2.0 Client ID
+   - `X_CLIENT_SECRET` - Your OAuth 2.0 Client Secret
+   - `CALLBACK_URL` - Your callback URL (e.g., `https://your-app.onrender.com/callback`)
 
 4. **Deploy**
    - Click "Apply"
@@ -56,10 +55,9 @@
    Go to "Environment" tab:
    ```
    NODE_ENV=production
-   X_API_KEY=<your_key>
-   X_API_SECRET=<your_secret>
-   X_ACCESS_TOKEN=<your_token>
-   X_ACCESS_TOKEN_SECRET=<your_token_secret>
+   X_CLIENT_ID=<your_client_id>
+   X_CLIENT_SECRET=<your_client_secret>
+   CALLBACK_URL=https://your-app.onrender.com/callback
    ```
 
 4. **Deploy**
@@ -87,10 +85,9 @@ docker build -t x-mcp-server .
 # Run with environment variables
 docker run -d \
   --name x-mcp-server \
-  -e X_API_KEY=your_key \
-  -e X_API_SECRET=your_secret \
-  -e X_ACCESS_TOKEN=your_token \
-  -e X_ACCESS_TOKEN_SECRET=your_token_secret \
+  -e X_CLIENT_ID=your_client_id \
+  -e X_CLIENT_SECRET=your_client_secret \
+  -e CALLBACK_URL=http://localhost:3000/callback \
   -p 3000:3000 \
   x-mcp-server
 
@@ -113,10 +110,9 @@ services:
     build: .
     environment:
       - NODE_ENV=production
-      - X_API_KEY=${X_API_KEY}
-      - X_API_SECRET=${X_API_SECRET}
-      - X_ACCESS_TOKEN=${X_ACCESS_TOKEN}
-      - X_ACCESS_TOKEN_SECRET=${X_ACCESS_TOKEN_SECRET}
+      - X_CLIENT_ID=${X_CLIENT_ID}
+      - X_CLIENT_SECRET=${X_CLIENT_SECRET}
+      - CALLBACK_URL=${CALLBACK_URL}
     ports:
       - "3000:3000"
     restart: unless-stopped
@@ -173,10 +169,9 @@ npm start
 
 Edit `.env`:
 ```env
-X_API_KEY=your_api_key_here
-X_API_SECRET=your_api_secret_here
-X_ACCESS_TOKEN=your_access_token_here
-X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
+X_CLIENT_ID=your_client_id_here
+X_CLIENT_SECRET=your_client_secret_here
+CALLBACK_URL=http://localhost:3000/callback
 NODE_ENV=development
 ```
 
@@ -200,10 +195,9 @@ NODE_ENV=development
       "command": "node",
       "args": ["/absolute/path/to/x-mcp-server/dist/index.js"],
       "env": {
-        "X_API_KEY": "your_api_key",
-        "X_API_SECRET": "your_api_secret",
-        "X_ACCESS_TOKEN": "your_access_token",
-        "X_ACCESS_TOKEN_SECRET": "your_access_token_secret"
+        "X_CLIENT_ID": "your_client_id",
+        "X_CLIENT_SECRET": "your_client_secret",
+        "CALLBACK_URL": "http://localhost:3000/callback"
       }
     }
   }
@@ -250,15 +244,16 @@ npm install --save @modelcontextprotocol/sdk twitter-api-v2 dotenv
 ### Authentication Errors
 
 **Problem**: "Invalid credentials"
-- Verify credentials in X Developer Portal
-- Ensure Access Token has Read + Write permissions
+- Verify OAuth 2.0 Client ID and Secret in X Developer Portal
+- Ensure OAuth 2.0 is enabled in your app settings
 - Check for extra spaces in environment variables
-- Regenerate tokens if necessary
+- Verify callback URL matches your app's configured callback URL
 
 **Problem**: "403 Forbidden"
-- App permissions may be incorrect
-- Regenerate access token with proper scopes
+- App permissions may be incorrect (ensure Read + Write is enabled)
+- OAuth 2.0 may not be enabled for your app
 - Check App's authentication settings
+- Visit `/authorize` endpoint to re-authenticate if tokens are missing
 
 ### Runtime Errors
 

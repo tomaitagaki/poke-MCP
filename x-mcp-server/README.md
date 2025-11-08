@@ -39,20 +39,20 @@ A Model Context Protocol (MCP) server for X (formerly Twitter) API integration. 
 
 1. **X Developer Account** - Sign up at https://developer.x.com
 2. **Create an X App** in the Developer Portal
-3. **Generate API credentials**:
-   - API Key (Consumer Key)
-   - API Secret (Consumer Secret)
-   - Access Token
-   - Access Token Secret
+3. **Enable OAuth 2.0** and generate credentials:
+   - Client ID
+   - Client Secret
 
 ### Getting X API Credentials
 
 1. Go to https://developer.x.com/en/portal/dashboard
 2. Create a new Project and App (or use an existing one)
 3. Navigate to your App settings → Keys and Tokens
-4. Generate/copy:
-   - API Key and Secret
-   - Access Token and Secret (with Read and Write permissions)
+4. Enable OAuth 2.0 in User authentication settings
+5. Copy:
+   - Client ID (X_CLIENT_ID)
+   - Client Secret (X_CLIENT_SECRET)
+6. Set callback URL: `http://localhost:3000/callback` (for local dev)
 
 ### Installation
 
@@ -72,12 +72,11 @@ npm install
 cp .env.example .env
 ```
 
-4. Edit `.env` and add your X API credentials:
+4. Edit `.env` and add your X OAuth 2.0 credentials:
 ```env
-X_API_KEY=your_api_key_here
-X_API_SECRET=your_api_secret_here
-X_ACCESS_TOKEN=your_access_token_here
-X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
+X_CLIENT_ID=your_client_id_here
+X_CLIENT_SECRET=your_client_secret_here
+CALLBACK_URL=http://localhost:3000/callback
 ```
 
 5. Build the TypeScript code:
@@ -89,6 +88,8 @@ npm run build
 ```bash
 npm start
 ```
+
+7. **Authenticate**: Visit `http://localhost:3000/authorize` in your browser to authorize the app. Tokens will be saved automatically to `.tokens.json`.
 
 ## Deployment on Render.com
 
@@ -111,13 +112,14 @@ npm start
 
 4. **Add Environment Variables**:
    Go to Environment tab and add:
-   - `X_API_KEY` - Your X API Key
-   - `X_API_SECRET` - Your X API Secret
-   - `X_ACCESS_TOKEN` - Your X Access Token
-   - `X_ACCESS_TOKEN_SECRET` - Your X Access Token Secret
+   - `X_CLIENT_ID` - Your X OAuth 2.0 Client ID
+   - `X_CLIENT_SECRET` - Your X OAuth 2.0 Client Secret
+   - `CALLBACK_URL` - Your callback URL (e.g., `https://your-app.onrender.com/callback`)
    - `NODE_ENV` - Set to `production`
 
 5. **Deploy**: Click "Create Web Service"
+
+6. **Authenticate**: After deployment, visit `https://your-app.onrender.com/authorize` to authorize the app
 
 ### Using render.yaml (Infrastructure as Code)
 
@@ -140,10 +142,10 @@ docker build -t x-mcp-server .
 
 # Run the container
 docker run -d \
-  -e X_API_KEY=your_key \
-  -e X_API_SECRET=your_secret \
-  -e X_ACCESS_TOKEN=your_token \
-  -e X_ACCESS_TOKEN_SECRET=your_token_secret \
+  -e X_CLIENT_ID=your_client_id \
+  -e X_CLIENT_SECRET=your_client_secret \
+  -e CALLBACK_URL=http://localhost:3000/callback \
+  -p 3000:3000 \
   x-mcp-server
 ```
 
@@ -160,10 +162,9 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
       "command": "node",
       "args": ["/path/to/x-mcp-server/dist/index.js"],
       "env": {
-        "X_API_KEY": "your_api_key",
-        "X_API_SECRET": "your_api_secret",
-        "X_ACCESS_TOKEN": "your_access_token",
-        "X_ACCESS_TOKEN_SECRET": "your_access_token_secret"
+        "X_CLIENT_ID": "your_client_id",
+        "X_CLIENT_SECRET": "your_client_secret",
+        "CALLBACK_URL": "http://localhost:3000/callback"
       }
     }
   }
@@ -250,9 +251,11 @@ This MCP server uses:
 ## Troubleshooting
 
 ### Authentication Errors
-- Verify your API credentials are correct
-- Ensure your X App has Read and Write permissions
-- Check that your Access Token hasn't expired
+- Verify your OAuth 2.0 Client ID and Secret are correct
+- Ensure your X App has OAuth 2.0 enabled
+- Check that your app has Read and Write permissions
+- Visit `/authorize` endpoint to authenticate if tokens are missing
+- Verify callback URL matches your app's configured callback URL
 
 ### Rate Limit Errors
 - Implement exponential backoff in your client
