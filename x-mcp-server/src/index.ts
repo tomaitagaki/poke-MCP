@@ -25,10 +25,30 @@ interface TokenStore {
 }
 
 // Path to token storage file
-const TOKEN_FILE_PATH = join(process.cwd(), '.tokens.json');
+// On Render, use persistent disk if available, otherwise fallback to temp directory
+// Render persistent disk is mounted at /opt/render/project/src if configured
+const TOKEN_FILE_PATH = process.env.RENDER_DISK_PATH 
+  ? join(process.env.RENDER_DISK_PATH, '.tokens.json')
+  : join(process.cwd(), '.tokens.json');
 
-// Load tokens from local file
+// Load tokens from local file or environment variable (for Render persistence)
 async function loadTokens(): Promise<TokenStore> {
+  // First, try loading from environment variable (survives Render restarts)
+  const envTokens = process.env.X_OAUTH_TOKENS;
+  if (envTokens) {
+    try {
+      const tokens = JSON.parse(envTokens) as TokenStore;
+      console.error('[AUTH] ✅ OAuth 2.0 tokens loaded from environment variable');
+      if (tokens.expiresAt) {
+        console.error('[AUTH] Token expires at:', new Date(tokens.expiresAt).toISOString());
+      }
+      return tokens;
+    } catch (error: any) {
+      console.error('[AUTH] ⚠️  Error parsing tokens from environment:', error.message);
+    }
+  }
+  
+  // Fallback to file storage
   try {
     const data = await fs.readFile(TOKEN_FILE_PATH, 'utf-8');
     const tokens = JSON.parse(data) as TokenStore;
@@ -47,11 +67,22 @@ async function loadTokens(): Promise<TokenStore> {
   }
 }
 
-// Save tokens to local file
+// Save tokens to local file and optionally to environment variable instructions
 async function saveTokens(tokens: TokenStore): Promise<void> {
   try {
+    // Save to file
     await fs.writeFile(TOKEN_FILE_PATH, JSON.stringify(tokens, null, 2), 'utf-8');
     console.error('[AUTH] ✅ Tokens saved to local storage');
+    
+    // On Render, tokens in files don't persist across restarts
+    // Log instructions for manual persistence via environment variable
+    if (process.env.RENDER) {
+      const tokenJson = JSON.stringify(tokens);
+      console.error('[AUTH] ⚠️  Render detected: Tokens will be lost on restart.');
+      console.error('[AUTH] 💡 To persist tokens, set X_OAUTH_TOKENS environment variable in Render dashboard:');
+      console.error(`[AUTH]    Value: ${tokenJson.substring(0, 100)}...`);
+      console.error('[AUTH]    Full value length:', tokenJson.length, 'characters');
+    }
   } catch (error: any) {
     console.error('[AUTH] ❌ Error saving tokens:', error.message);
     throw error;
@@ -793,8 +824,19 @@ async function main() {
       );
 
       // Store code verifier and state for callback validation
-      // In production, use Redis or database
-      (global as any).oauth2State = { codeVerifier, state };
+      // Try to persist to file for Render compatibility (survives restarts)
+      // Fallback to in-memory if file write fails
+      const stateFilePath = process.env.RENDER_DISK_PATH 
+        ? join(process.env.RENDER_DISK_PATH, '.oauth-state.json')
+        : join(process.cwd(), '.oauth-state.json');
+      
+      try {
+        await fs.writeFile(stateFilePath, JSON.stringify({ codeVerifier, state, timestamp: Date.now() }), 'utf-8');
+        console.error('[OAUTH] State saved to file for persistence');
+      } catch (error: any) {
+        console.error('[OAUTH] Could not save state to file, using in-memory:', error.message);
+        (global as any).oauth2State = { codeVerifier, state };
+      }
 
       console.error('[OAUTH] Authorization URL generated');
       console.error('[OAUTH] Redirect to:', url);
@@ -823,10 +865,32 @@ async function main() {
       }
 
       // Retrieve stored state and code verifier
-      const storedData = (global as any).oauth2State;
+      // Try to load from file first (for Render persistence), then fallback to memory
+      const stateFilePath = process.env.RENDER_DISK_PATH 
+        ? join(process.env.RENDER_DISK_PATH, '.oauth-state.json')
+        : join(process.cwd(), '.oauth-state.json');
+      
+      let storedData: any = null;
+      
+      try {
+        const stateData = await fs.readFile(stateFilePath, 'utf-8');
+        storedData = JSON.parse(stateData);
+        // Clean up state file after reading
+        await fs.unlink(stateFilePath).catch(() => {});
+        console.error('[OAUTH] State loaded from file');
+      } catch (error: any) {
+        // Fallback to in-memory state
+        storedData = (global as any).oauth2State;
+        console.error('[OAUTH] State loaded from memory');
+      }
 
       if (!storedData) {
-        throw new Error('No OAuth state found. Please restart authorization.');
+        throw new Error('No OAuth state found. Please restart authorization by visiting /authorize again.');
+      }
+      
+      // Check if state is too old (more than 10 minutes)
+      if (storedData.timestamp && Date.now() - storedData.timestamp > 10 * 60 * 1000) {
+        throw new Error('OAuth state expired. Please restart authorization.');
       }
 
       if (state !== storedData.state) {
@@ -863,7 +927,7 @@ async function main() {
       // Update the global client
       rwClient = loggedClient.readWrite;
 
-      // Clean up stored state
+      // Clean up stored state (already deleted if loaded from file)
       delete (global as any).oauth2State;
 
       console.error('[OAUTH] ✅ Successfully authenticated with OAuth 2.0!');
@@ -871,19 +935,32 @@ async function main() {
       console.error('[OAUTH] Token expires at:', new Date(expiresAt).toISOString());
       console.error('[OAUTH] Tokens saved to local storage (.tokens.json)');
 
+      // Prepare token JSON for environment variable (for Render persistence)
+      const tokenJson = JSON.stringify(tokenStore);
+      const isRender = !!process.env.RENDER;
+
       res.send(`
         <html>
           <head>
             <title>Authorization Successful</title>
             <style>
-              body { font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; }
+              body { font-family: system-ui; max-width: 900px; margin: 50px auto; padding: 20px; }
               h1 { color: #1DA1F2; }
               .success { background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; }
               .warning { background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107; }
-              .code-block { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 12px; }
+              .code-block { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 11px; word-break: break-all; max-height: 200px; overflow-y: auto; }
               .copy-btn { background: #1DA1F2; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
               .copy-btn:hover { background: #1a8cd8; }
+              .step { margin: 15px 0; padding: 10px; background: #f9f9f9; border-radius: 4px; }
             </style>
+            <script>
+              function copyTokens() {
+                const text = document.getElementById('token-json').textContent;
+                navigator.clipboard.writeText(text).then(() => {
+                  alert('Tokens copied to clipboard! Paste into X_OAUTH_TOKENS environment variable in Render.');
+                });
+              }
+            </script>
           </head>
           <body>
             <h1>✅ Authorization Successful!</h1>
@@ -892,7 +969,25 @@ async function main() {
               <strong>Your X MCP Server is now authenticated with OAuth 2.0!</strong><br>
               <p>Your OAuth 2.0 tokens have been saved to <code>.tokens.json</code> and will be automatically refreshed before expiration.</p>
               <p><strong>Scopes granted:</strong> bookmark.read, bookmark.write, tweet.write</p>
+              <p><strong>Token expires:</strong> ${new Date(expiresAt).toLocaleString()}</p>
             </div>
+
+            ${isRender ? `
+            <div class="warning">
+              <strong>⚠️ Render Free Tier Notice:</strong>
+              <p>Tokens saved to files will be <strong>lost when the service restarts</strong> on Render free tier.</p>
+              <p><strong>To persist tokens across restarts:</strong></p>
+              <div class="step">
+                <strong>Step 1:</strong> Copy the token JSON below<br>
+                <strong>Step 2:</strong> Go to Render Dashboard → Your Service → Environment<br>
+                <strong>Step 3:</strong> Add environment variable:<br>
+                <code>Key:</code> <strong>X_OAUTH_TOKENS</strong><br>
+                <code>Value:</code> (paste the JSON below)
+              </div>
+              <div class="code-block" id="token-json">${tokenJson}</div>
+              <button class="copy-btn" onclick="copyTokens()">Copy Token JSON</button>
+            </div>
+            ` : ''}
 
             <p style="text-align: center; margin-top: 40px; color: #666;">
               You can now close this window and return to Poke.
