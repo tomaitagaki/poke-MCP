@@ -363,12 +363,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  console.error(`[TOOL] 🔧 Tool call received: ${name}`);
+  console.error(`[TOOL] Arguments:`, JSON.stringify(args, null, 2));
+  
   try {
     // Refresh client to use latest OAuth 2.0 token if available
+    console.error(`[TOOL] 🔄 Getting Twitter client...`);
     const client = await getTwitterClient();
     rwClient = client.readWrite;
-
-    const { name, arguments: args } = request.params;
+    console.error(`[TOOL] ✅ Twitter client ready`);
 
     switch (name) {
       case 'post_tweet': {
@@ -403,12 +407,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           pagination_token?: string;
         };
 
+        console.error(`[TOOL] 📚 Getting bookmarks (max_results: ${max_results})...`);
         const me = await rwClient.v2.me();
+        console.error(`[TOOL] ✅ Got user info, fetching bookmarks...`);
         const bookmarks = await rwClient.v2.bookmarks({
           max_results: Math.min(Math.max(max_results, 5), 100),
           pagination_token,
           'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
         });
+        console.error(`[TOOL] ✅ Got ${bookmarks.data.data?.length || 0} bookmarks`);
 
         return {
           content: [
@@ -634,7 +641,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
   } catch (error: any) {
+    console.error(`[TOOL] ❌ Error executing tool ${name}:`, error.message);
+    console.error(`[TOOL] Error stack:`, error.stack);
+    
     if (error instanceof ApiResponseError) {
+      console.error(`[TOOL] X API Error details:`, {
+        code: error.code,
+        data: error.data,
+      });
       return {
         content: [
           {
@@ -939,13 +953,29 @@ async function main() {
 
     try {
       console.error(`[MESSAGE] ✅ Routing to transport for session ${sessionId}`);
+      console.error(`[MESSAGE] Transport exists:`, !!transport);
+      
+      // Ensure transport is still valid before processing
+      if (!transport) {
+        console.error(`[MESSAGE] ❌ Transport became invalid`);
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+      
       // Handle the POST message with the transport
+      // This will trigger the tool call handler which may take time
+      console.error(`[MESSAGE] Starting message processing...`);
       await transport.handlePostMessage(req, res, req.body);
+      console.error(`[MESSAGE] ✅ Message processing completed`);
     } catch (error: any) {
       console.error('[MESSAGE] ❌ Error handling message:', error.message);
+      console.error('[MESSAGE] Error name:', error.name);
       console.error('[MESSAGE] Error stack:', error.stack);
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to process message' });
+        res.status(500).json({ 
+          error: 'Failed to process message',
+          details: error.message 
+        });
       }
     }
   });
