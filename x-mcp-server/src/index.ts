@@ -471,75 +471,71 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_bookmarks': {
-        const { max_results = 10, pagination_token } = args as {
-          max_results?: number;
-          pagination_token?: string;
-        };
-
-        console.error(`[TOOL] 📚 Getting bookmarks (max_results: ${max_results})...`);
-        
-        // First verify we can access user info (validates token)
-        try {
-          const me = await rwClient.v2.me();
-          console.error(`[TOOL] ✅ Got user info - User ID: ${me.data.id}, Username: ${me.data.username}`);
-        } catch (error: any) {
-          console.error(`[TOOL] ❌ Failed to get user info - token may be invalid`);
-          console.error(`[TOOL] Error:`, error.message);
-          throw new Error(`Token validation failed: ${error.message}. Please re-authenticate at /authorize`);
-        }
-        
-        console.error(`[TOOL] ✅ Got user info, fetching bookmarks...`);
-        const bookmarks = await rwClient.v2.bookmarks({
-          max_results: Math.min(Math.max(max_results, 5), 100),
-          pagination_token,
-          'tweet.fields': ['created_at', 'author_id', 'public_metrics'],
-        });
-        console.error(`[TOOL] ✅ Got ${bookmarks.data.data?.length || 0} bookmarks`);
-
+        // According to X API v2 auth mapping, bookmarks endpoints require OAuth 1.0a User Context
+        // They are NOT available with OAuth 2.0 Authorization Code with PKCE
+        // See: https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                bookmarks: bookmarks.data.data || [],
-                meta: bookmarks.data.meta,
+                error: 'Bookmarks endpoints are not available with OAuth 2.0 Authorization Code with PKCE',
+                message: 'According to X API v2 authentication mapping, bookmarks endpoints (GET /2/users/:id/bookmarks) require OAuth 1.0a User Context authentication. They are not supported with OAuth 2.0 Authorization Code with PKCE.',
+                documentation: 'https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping',
+                availableWithOAuth2: [
+                  'Tweet lookup',
+                  'Post/Delete tweets',
+                  'Timelines',
+                  'Search',
+                  'Retweets',
+                  'Likes',
+                  'User lookup',
+                  'Follows',
+                  'Lists',
+                  'Spaces',
+                  'Mutes',
+                  'Blocks'
+                ]
               }, null, 2),
             },
           ],
+          isError: true,
         };
       }
 
       case 'add_bookmark': {
-        const { tweet_id } = args as { tweet_id: string };
-        const result = await rwClient.v2.bookmark(tweet_id);
-
+        // According to X API v2 auth mapping, bookmarks endpoints require OAuth 1.0a User Context
+        // They are NOT available with OAuth 2.0 Authorization Code with PKCE
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                success: true,
-                bookmarked: result.data.bookmarked,
+                error: 'Bookmarks endpoints are not available with OAuth 2.0 Authorization Code with PKCE',
+                message: 'According to X API v2 authentication mapping, bookmark management endpoints (POST /2/users/:id/bookmarks) require OAuth 1.0a User Context authentication. They are not supported with OAuth 2.0 Authorization Code with PKCE.',
+                documentation: 'https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping',
               }, null, 2),
             },
           ],
+          isError: true,
         };
       }
 
       case 'remove_bookmark': {
-        const { tweet_id } = args as { tweet_id: string };
-        const result = await rwClient.v2.deleteBookmark(tweet_id);
-
+        // According to X API v2 auth mapping, bookmarks endpoints require OAuth 1.0a User Context
+        // They are NOT available with OAuth 2.0 Authorization Code with PKCE
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                success: true,
-                bookmarked: result.data.bookmarked,
+                error: 'Bookmarks endpoints are not available with OAuth 2.0 Authorization Code with PKCE',
+                message: 'According to X API v2 authentication mapping, bookmark management endpoints (DELETE /2/users/:id/bookmarks/:tweet_id) require OAuth 1.0a User Context authentication. They are not supported with OAuth 2.0 Authorization Code with PKCE.',
+                documentation: 'https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping',
               }, null, 2),
             },
           ],
+          isError: true,
         };
       }
 
@@ -897,15 +893,22 @@ async function main() {
       const callbackURL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
 
       // Generate authorization URL with PKCE
-      // Scopes: bookmark.read, bookmark.write, tweet.write, offline.access (for token refresh)
+      // According to X API v2 auth mapping: https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping
+      // Bookmarks endpoints are NOT available with OAuth 2.0 Authorization Code with PKCE
+      // They only work with OAuth 1.0a User Context
+      // Available OAuth 2.0 scopes: tweet.read, users.read, tweet.write, like.read, like.write, 
+      // follows.read, follows.write, space.read, list.read, list.write, mute.read, mute.write, 
+      // block.read, tweet.moderate.write, offline.access
       const { url, codeVerifier, state } = oauth2Client.generateOAuth2AuthLink(
         callbackURL,
         {
           scope: [
-            'bookmark.read',
-            'bookmark.write',
+            'tweet.read',
+            'users.read',
             'tweet.write',
-            'offline.access'
+            'like.read',
+            'like.write',
+            'offline.access' // Required for token refresh
           ],
         }
       );
@@ -1055,7 +1058,8 @@ async function main() {
             <div class="success">
               <strong>Your X MCP Server is now authenticated with OAuth 2.0!</strong><br>
               <p>Your OAuth 2.0 tokens have been saved to <code>.tokens.json</code> and will be automatically refreshed before expiration.</p>
-              <p><strong>Scopes granted:</strong> bookmark.read, bookmark.write, tweet.write</p>
+              <p><strong>Scopes granted:</strong> tweet.read, users.read, tweet.write, like.read, like.write, offline.access</p>
+              <p><strong>Note:</strong> Bookmarks endpoints require OAuth 1.0a and are not available with OAuth 2.0 Authorization Code with PKCE.</p>
               <p><strong>Token expires:</strong> ${new Date(expiresAt).toLocaleString()}</p>
             </div>
 
@@ -1105,6 +1109,68 @@ async function main() {
         description: t.description
       }))
     });
+  });
+
+  // Token validation endpoint (for debugging)
+  app.get('/validate-token', async (_req, res) => {
+    if (!tokenStore.accessToken) {
+      tokenStore = await loadTokens();
+    }
+
+    if (!tokenStore.accessToken) {
+      return res.json({
+        valid: false,
+        error: 'No token found. Visit /authorize to authenticate.'
+      });
+    }
+
+    try {
+      const client = new TwitterApi(tokenStore.accessToken);
+      
+      // Test 1: Get user info
+      const me = await client.v2.me();
+      
+      // Test 2: Try to get bookmarks (this is what's failing)
+      let bookmarksTest: { success: boolean; error: any } = { success: false, error: null };
+      try {
+        await client.v2.bookmarks({ max_results: 1 });
+        bookmarksTest.success = true;
+      } catch (error: any) {
+        bookmarksTest.error = {
+          code: error.code,
+          message: error.message,
+          data: error.data
+        };
+      }
+
+      res.json({
+        valid: true,
+        user: {
+          id: me.data.id,
+          username: me.data.username,
+          name: me.data.name
+        },
+        tokenInfo: {
+          hasRefreshToken: !!tokenStore.refreshToken,
+          expiresAt: tokenStore.expiresAt ? new Date(tokenStore.expiresAt).toISOString() : null,
+          tokenLength: tokenStore.accessToken.length
+        },
+        bookmarksTest,
+        message: bookmarksTest.success 
+          ? 'Token is valid and can access bookmarks'
+          : 'Token is valid but cannot access bookmarks. Check app permissions and scopes.'
+      });
+    } catch (error: any) {
+      res.json({
+        valid: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          data: error.data
+        },
+        message: 'Token is invalid or expired. Visit /authorize to re-authenticate.'
+      });
+    }
   });
 
   // Message endpoint for MCP
