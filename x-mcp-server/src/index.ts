@@ -37,14 +37,45 @@ async function loadTokens(): Promise<TokenStore> {
   const envTokens = process.env.X_OAUTH_TOKENS;
   if (envTokens) {
     try {
-      const tokens = JSON.parse(envTokens) as TokenStore;
-      console.error('[AUTH] ✅ OAuth 2.0 tokens loaded from environment variable');
-      if (tokens.expiresAt) {
-        console.error('[AUTH] Token expires at:', new Date(tokens.expiresAt).toISOString());
+      // Trim whitespace and handle quoted strings (common when copying from UI)
+      const trimmed = envTokens.trim();
+      const cleaned = trimmed.startsWith('"') && trimmed.endsWith('"') 
+        ? trimmed.slice(1, -1) 
+        : trimmed;
+      
+      const tokens = JSON.parse(cleaned) as TokenStore;
+      
+      // Validate token structure
+      if (!tokens.accessToken) {
+        console.error('[AUTH] ⚠️  Token loaded but missing accessToken field');
+        return {};
       }
+      
+      console.error('[AUTH] ✅ OAuth 2.0 tokens loaded from environment variable');
+      console.error('[AUTH] Access token length:', tokens.accessToken.length, 'characters');
+      console.error('[AUTH] Has refresh token:', !!tokens.refreshToken);
+      
+      if (tokens.expiresAt) {
+        const expiresAt = new Date(tokens.expiresAt);
+        const now = new Date();
+        const isExpired = expiresAt < now;
+        const timeUntilExpiry = expiresAt.getTime() - now.getTime();
+        
+        console.error('[AUTH] Token expires at:', expiresAt.toISOString());
+        console.error('[AUTH] Token is expired:', isExpired);
+        if (!isExpired) {
+          console.error('[AUTH] Time until expiry:', Math.floor(timeUntilExpiry / 1000 / 60), 'minutes');
+        }
+      } else {
+        console.error('[AUTH] ⚠️  Token missing expiresAt field - may be expired');
+      }
+      
       return tokens;
     } catch (error: any) {
       console.error('[AUTH] ⚠️  Error parsing tokens from environment:', error.message);
+      console.error('[AUTH] Env var length:', envTokens.length);
+      console.error('[AUTH] First 50 chars:', envTokens.substring(0, 50));
+      console.error('[AUTH] Make sure X_OAUTH_TOKENS is valid JSON without extra quotes');
     }
   }
   
@@ -170,7 +201,14 @@ async function getTwitterClient(): Promise<TwitterApi> {
     throw new Error('No OAuth 2.0 access token available. Please visit /authorize to authenticate.');
   }
 
+  // Validate token format (OAuth 2.0 tokens are typically base64-like strings)
+  if (tokenStore.accessToken.length < 20) {
+    console.error('[AUTH] ⚠️  Access token seems too short:', tokenStore.accessToken.length);
+  }
+
   console.error('[AUTH] Using OAuth 2.0 token');
+  console.error('[AUTH] Token preview:', tokenStore.accessToken.substring(0, 20) + '...');
+  
   return new TwitterApi(tokenStore.accessToken);
 }
 
@@ -439,7 +477,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
         console.error(`[TOOL] 📚 Getting bookmarks (max_results: ${max_results})...`);
-        const me = await rwClient.v2.me();
+        
+        // First verify we can access user info (validates token)
+        try {
+          const me = await rwClient.v2.me();
+          console.error(`[TOOL] ✅ Got user info - User ID: ${me.data.id}, Username: ${me.data.username}`);
+        } catch (error: any) {
+          console.error(`[TOOL] ❌ Failed to get user info - token may be invalid`);
+          console.error(`[TOOL] Error:`, error.message);
+          throw new Error(`Token validation failed: ${error.message}. Please re-authenticate at /authorize`);
+        }
+        
         console.error(`[TOOL] ✅ Got user info, fetching bookmarks...`);
         const bookmarks = await rwClient.v2.bookmarks({
           max_results: Math.min(Math.max(max_results, 5), 100),
@@ -680,11 +728,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         code: error.code,
         data: error.data,
       });
+      
+      // Provide helpful error messages for common issues
+      let errorMessage = `X API Error: ${error.message}\nCode: ${error.code}`;
+      
+      if (error.code === 403) {
+        errorMessage += '\n\n403 Forbidden usually means:';
+        errorMessage += '\n1. Token is invalid or expired';
+        errorMessage += '\n2. Token missing required scopes (bookmark.read, bookmark.write)';
+        errorMessage += '\n3. X Developer App permissions not set correctly';
+        errorMessage += '\n\nSolution: Visit /authorize to re-authenticate';
+      } else if (error.code === 401) {
+        errorMessage += '\n\n401 Unauthorized means the token is invalid or expired.';
+        errorMessage += '\nSolution: Visit /authorize to re-authenticate';
+      }
+      
+      errorMessage += `\n\nFull error: ${JSON.stringify(error.data, null, 2)}`;
+      
       return {
         content: [
           {
             type: 'text',
-            text: `X API Error: ${error.message}\nCode: ${error.code}\nData: ${JSON.stringify(error.data, null, 2)}`,
+            text: errorMessage,
           },
         ],
         isError: true,
@@ -773,23 +838,45 @@ async function main() {
   app.use(express.json());
 
   // Health check endpoint
-  app.get('/health', (_req, res) => {
+  app.get('/health', async (_req, res) => {
+    // Reload tokens to get latest status
+    if (!tokenStore.accessToken) {
+      tokenStore = await loadTokens();
+    }
+    
     const now = Date.now();
     const expiresAt = tokenStore.expiresAt;
     const isExpired = expiresAt ? expiresAt < now : false;
     const timeUntilExpiry = expiresAt ? Math.max(0, expiresAt - now) : 0;
+    
+    // Try to validate token if available
+    let tokenValid = false;
+    let tokenValidationError = null;
+    if (tokenStore.accessToken) {
+      try {
+        const testClient = new TwitterApi(tokenStore.accessToken);
+        await testClient.v2.me();
+        tokenValid = true;
+      } catch (error: any) {
+        tokenValid = false;
+        tokenValidationError = error.message;
+      }
+    }
 
     res.json({
       status: 'ok',
       service: 'x-mcp-server',
       version: '1.0.0',
       authenticated: !!tokenStore.accessToken,
+      tokenValid,
       authType: 'OAuth 2.0',
       tokenStatus: tokenStore.accessToken ? {
         hasRefreshToken: !!tokenStore.refreshToken,
         expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
         isExpired,
         timeUntilExpirySeconds: Math.floor(timeUntilExpiry / 1000),
+        tokenLength: tokenStore.accessToken.length,
+        validationError: tokenValidationError,
       } : null,
       endpoints: {
         health: '/health',
