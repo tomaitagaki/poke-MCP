@@ -6,6 +6,7 @@ A Model Context Protocol (MCP) server for X (formerly Twitter) API integration. 
 
 - 🐦 **Post tweets** - Create new posts, replies, and threads
 - 📚 **Bookmarks** - Save, retrieve, and manage your bookmarked tweets
+- 🤖 **AI Bookmark Categorization** - Automatically categorize bookmarks with topic tags, actionable todos, and metadata for knowledge graphs
 - 📱 **Timeline** - Access your home timeline and user tweets
 - ❤️ **Likes & Retweets** - Like, unlike, retweet, and unretweet posts
 - 🔍 **Search** - Search for tweets using X search operators
@@ -40,6 +41,7 @@ Quick multi-user setup:
 - `get_bookmarks` - Get your saved/bookmarked tweets (up to 800 most recent)
 - `add_bookmark` - Add a tweet to your bookmarks
 - `remove_bookmark` - Remove a tweet from your bookmarks
+- `categorize_bookmark` - Categorize a bookmark with LLM analysis (tags, todos, metadata) - **[See Guide](./BOOKMARK_CATEGORIZATION.md)**
 
 ### Timeline
 - `get_home_timeline` - Get tweets from accounts you follow
@@ -95,7 +97,12 @@ cp .env.example .env
 X_CLIENT_ID=your_client_id_here
 X_CLIENT_SECRET=your_client_secret_here
 CALLBACK_URL=http://localhost:3000/callback
+
+# Optional: For bookmark categorization feature
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
+
+To use the `categorize_bookmark` tool, get your Anthropic API key from https://console.anthropic.com/
 
 5. Build the TypeScript code:
 ```bash
@@ -233,6 +240,19 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
+**Categorize a bookmark with AI:**
+```json
+{
+  "name": "categorize_bookmark",
+  "arguments": {
+    "tweet_id": "1234567890",
+    "additional_context": "Saved for upcoming ML project"
+  }
+}
+```
+
+Returns topic tags, actionable todos, and metadata for knowledge graph integration. [Learn more](./BOOKMARK_CATEGORIZATION.md)
+
 ## API Rate Limits
 
 Be aware of X API rate limits:
@@ -263,8 +283,9 @@ npm run dev
 This MCP server uses:
 - **@modelcontextprotocol/sdk** - MCP protocol implementation
 - **twitter-api-v2** - X API v2 client library
+- **@anthropic-ai/sdk** - Claude AI for bookmark categorization
 - **TypeScript** - Type-safe development
-- **Stdio Transport** - Communication with MCP clients
+- **SSE Transport** - Server-Sent Events for MCP communication
 
 ## Troubleshooting
 
