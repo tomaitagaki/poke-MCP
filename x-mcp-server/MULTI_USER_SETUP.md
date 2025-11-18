@@ -108,16 +108,47 @@ The server will:
 - Create separate token storage files for each user (`.tokens-{userId}.json`)
 - Listen for connections on the configured port
 
-### 5. Authorize Each User
+### 5. Authorize Users
 
-Each user must complete OAuth authorization to connect their X account:
+You have two options for setting up users:
 
-#### Option 1: Using API Key
+#### Option A: Self-Service Registration (Recommended)
+
+Allow users to register themselves through a web interface:
+
+1. **Direct users to the registration page:**
+   ```
+   http://localhost:3000/register
+   ```
+
+2. **Users fill out the registration form with:**
+   - Name (display name)
+   - User ID (lowercase, numbers, hyphens, underscores only)
+   - X OAuth Client ID (from their X Developer App)
+   - X OAuth Client Secret
+   - Callback URL (optional, defaults to server callback URL)
+
+3. **After submitting, users will:**
+   - Be redirected to X for OAuth authorization
+   - Complete the OAuth flow
+   - See their generated API key on the success page
+   - **IMPORTANT:** Users must save their API key - it won't be shown again!
+
+4. **Users can then connect with:**
+   ```
+   http://localhost:3000/sse?apiKey=their-generated-api-key
+   ```
+
+#### Option B: Manual Authorization (Admin-Configured Users)
+
+For users already configured in `users.json`:
+
+**Using API Key:**
 ```
 http://localhost:3000/authorize?apiKey=alice-secret-api-key-here
 ```
 
-#### Option 2: Using User ID
+**Using User ID:**
 ```
 http://localhost:3000/authorize?userId=alice
 ```
@@ -332,8 +363,10 @@ To migrate from single-user to multi-user mode:
 | `/health` | GET | No | Server health and user status |
 | `/sse` | GET | Yes (API key) | MCP Server-Sent Events connection |
 | `/message` | POST | Yes (session) | MCP message handling |
+| `/register` | GET | No | Self-service user registration form |
+| `/register` | POST | No | Process user registration and redirect to OAuth |
 | `/authorize` | GET | Yes (API key or userId) | Start OAuth flow for user |
-| `/callback` | GET | No | OAuth callback handler |
+| `/callback` | GET | No | OAuth callback handler (displays API key for new users) |
 | `/validate-token` | GET | Yes (API key or userId) | Validate user's token |
 | `/tools` | GET | No | List available MCP tools |
 

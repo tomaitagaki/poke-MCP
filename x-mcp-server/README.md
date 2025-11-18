@@ -24,10 +24,15 @@ This server supports **multi-user mode**, allowing multiple users to concurrentl
 
 Quick multi-user setup:
 1. Set `MULTI_USER_MODE=true` in `.env`
-2. Create `users.json` from `users.json.example`
-3. Configure each user with unique API keys and X OAuth credentials
-4. Each user authorizes at `/authorize?apiKey=THEIR_API_KEY`
-5. Connect with API key via header or query parameter
+2. **Option A - Self-Service Registration (Recommended):**
+   - Direct users to `/register` to create their own accounts
+   - Users enter their X Developer credentials and get an auto-generated API key
+   - Automatic OAuth authorization and token management
+3. **Option B - Manual Configuration:**
+   - Create `users.json` from `users.json.example`
+   - Configure each user with unique API keys and X OAuth credentials
+   - Each user authorizes at `/authorize?apiKey=THEIR_API_KEY`
+4. Connect with API key via header or query parameter
 
 ## Available Tools
 

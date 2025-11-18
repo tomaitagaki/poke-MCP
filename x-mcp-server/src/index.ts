@@ -13,6 +13,7 @@ import cors from 'cors';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
+import { randomBytes } from 'crypto';
 
 dotenv.config();
 
@@ -74,6 +75,41 @@ function getUserByApiKey(apiKey: string): User | undefined {
     return undefined;
   }
   return userStore.users.find(u => u.apiKey === apiKey);
+}
+
+// Generate a cryptographically secure API key
+function generateApiKey(): string {
+  return randomBytes(32).toString('hex');
+}
+
+// Save users to users.json file
+async function saveUsers(users: User[]): Promise<void> {
+  try {
+    const usersFilePath = join(process.cwd(), 'users.json');
+    await fs.writeFile(usersFilePath, JSON.stringify({ users }, null, 2), 'utf-8');
+    console.error('[AUTH] ✅ Users saved to users.json');
+  } catch (error: any) {
+    console.error('[AUTH] ❌ Error saving users:', error.message);
+    throw error;
+  }
+}
+
+// Add a new user
+async function addUser(user: User): Promise<void> {
+  // Check if user already exists
+  const existingUser = userStore.users.find(u => u.userId === user.userId);
+  if (existingUser) {
+    throw new Error(`User ${user.userId} already exists`);
+  }
+
+  // Add user to store
+  userStore.users.push(user);
+
+  // Save to file
+  await saveUsers(userStore.users);
+
+  // Initialize empty token store for new user
+  tokenStores.set(user.userId, {});
 }
 
 // Get token file path for a specific user
@@ -1199,6 +1235,209 @@ async function main() {
     }
   });
 
+  // Registration page (GET)
+  app.get('/register', async (req, res) => {
+    if (!MULTI_USER_MODE) {
+      return res.status(400).send('Registration is only available in multi-user mode');
+    }
+
+    res.send(`
+      <html>
+        <head>
+          <title>Register for X MCP Server</title>
+          <style>
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+              max-width: 600px;
+              margin: 50px auto;
+              padding: 20px;
+              background: #f5f7fa;
+            }
+            .container {
+              background: white;
+              border-radius: 12px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+              padding: 40px;
+            }
+            h1 {
+              color: #1DA1F2;
+              margin: 0 0 10px 0;
+              font-size: 28px;
+            }
+            .subtitle {
+              color: #657786;
+              margin-bottom: 30px;
+              font-size: 14px;
+            }
+            .form-group {
+              margin-bottom: 20px;
+            }
+            label {
+              display: block;
+              margin-bottom: 6px;
+              font-weight: 500;
+              color: #14171a;
+              font-size: 14px;
+            }
+            input {
+              width: 100%;
+              padding: 12px;
+              border: 1px solid #e1e8ed;
+              border-radius: 6px;
+              font-size: 14px;
+              box-sizing: border-box;
+              transition: border-color 0.2s;
+            }
+            input:focus {
+              outline: none;
+              border-color: #1DA1F2;
+            }
+            .help-text {
+              font-size: 12px;
+              color: #657786;
+              margin-top: 4px;
+            }
+            button {
+              background: #1DA1F2;
+              color: white;
+              border: none;
+              padding: 12px 24px;
+              border-radius: 6px;
+              cursor: pointer;
+              font-size: 16px;
+              font-weight: 600;
+              width: 100%;
+              transition: background 0.2s;
+            }
+            button:hover {
+              background: #1a8cd8;
+            }
+            .info-box {
+              background: #e8f5fd;
+              border-left: 4px solid #1DA1F2;
+              padding: 16px;
+              border-radius: 6px;
+              margin-bottom: 20px;
+              font-size: 14px;
+            }
+            .info-box strong {
+              color: #1565c0;
+            }
+            a {
+              color: #1DA1F2;
+              text-decoration: none;
+            }
+            a:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Register New User</h1>
+            <p class="subtitle">Connect your X (Twitter) developer account to get started</p>
+
+            <div class="info-box">
+              <strong>Before you start:</strong> You'll need an X Developer account with OAuth 2.0 credentials.
+              <br><a href="https://developer.x.com/en/portal/dashboard" target="_blank">Get credentials →</a>
+            </div>
+
+            <form action="/register" method="POST">
+              <div class="form-group">
+                <label for="name">Your Name</label>
+                <input type="text" id="name" name="name" required placeholder="John Doe">
+                <div class="help-text">This is just for display purposes</div>
+              </div>
+
+              <div class="form-group">
+                <label for="userId">User ID</label>
+                <input type="text" id="userId" name="userId" required placeholder="johndoe" pattern="[a-z0-9_-]+" title="Lowercase letters, numbers, hyphens, and underscores only">
+                <div class="help-text">Lowercase letters, numbers, hyphens, and underscores only</div>
+              </div>
+
+              <div class="form-group">
+                <label for="xClientId">X OAuth 2.0 Client ID</label>
+                <input type="text" id="xClientId" name="xClientId" required placeholder="Your X App Client ID">
+                <div class="help-text">From your X Developer Portal</div>
+              </div>
+
+              <div class="form-group">
+                <label for="xClientSecret">X OAuth 2.0 Client Secret</label>
+                <input type="password" id="xClientSecret" name="xClientSecret" required placeholder="Your X App Client Secret">
+                <div class="help-text">Keep this secret! It will be stored securely</div>
+              </div>
+
+              <div class="form-group">
+                <label for="callbackUrl">Callback URL (Optional)</label>
+                <input type="url" id="callbackUrl" name="callbackUrl" placeholder="${process.env.CALLBACK_URL || 'http://localhost:3000/callback'}">
+                <div class="help-text">Leave blank to use default. Must match your X App settings.</div>
+              </div>
+
+              <button type="submit">Register & Authorize →</button>
+            </form>
+          </div>
+        </body>
+      </html>
+    `);
+  });
+
+  // Registration handler (POST)
+  app.post('/register', async (req, res) => {
+    if (!MULTI_USER_MODE) {
+      return res.status(400).json({ error: 'Registration is only available in multi-user mode' });
+    }
+
+    try {
+      const { name, userId, xClientId, xClientSecret, callbackUrl } = req.body;
+
+      // Validate required fields
+      if (!name || !userId || !xClientId || !xClientSecret) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      // Validate userId format (lowercase, alphanumeric, hyphens, underscores)
+      if (!/^[a-z0-9_-]+$/.test(userId)) {
+        return res.status(400).json({
+          error: 'Invalid userId format. Use only lowercase letters, numbers, hyphens, and underscores.'
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = userStore.users.find(u => u.userId === userId);
+      if (existingUser) {
+        return res.status(409).json({ error: `User ${userId} already exists` });
+      }
+
+      // Generate API key
+      const apiKey = generateApiKey();
+
+      // Create new user
+      const newUser: User = {
+        userId,
+        apiKey,
+        name,
+        xClientId,
+        xClientSecret,
+        callbackUrl: callbackUrl || process.env.CALLBACK_URL || 'http://localhost:3000/callback',
+      };
+
+      // Add user to store and save
+      await addUser(newUser);
+
+      console.error(`[REGISTER] ✅ New user registered: ${userId}`);
+
+      // Store API key in session for callback page
+      (global as any).pendingRegistrations = (global as any).pendingRegistrations || new Map();
+      (global as any).pendingRegistrations.set(userId, apiKey);
+
+      // Redirect to OAuth authorization with the new API key
+      res.redirect(`/authorize?apiKey=${apiKey}&newUser=true`);
+    } catch (error: any) {
+      console.error('[REGISTER] ❌ Registration error:', error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // OAuth 2.0 Authorization endpoint
   app.get('/authorize', async (req, res) => {
     try {
@@ -1414,6 +1653,16 @@ async function main() {
       const tokenFileName = userId !== 'default' ? `.tokens-${userId}.json` : '.tokens.json';
       console.error(`[OAUTH] Tokens saved to local storage (${tokenFileName})`);
 
+      // Check if this is a new user registration
+      const pendingRegs = (global as any).pendingRegistrations as Map<string, string> | undefined;
+      const newUserApiKey = pendingRegs?.get(userId);
+      const isNewUser = !!newUserApiKey;
+
+      // Clean up pending registration after retrieving
+      if (isNewUser && pendingRegs) {
+        pendingRegs.delete(userId);
+      }
+
       // Prepare token JSON for environment variable (for Render persistence)
       const tokenJson = JSON.stringify(newTokens);
       const envVarName = userId !== 'default' ? `X_OAUTH_TOKENS_${userId.toUpperCase()}` : 'X_OAUTH_TOKENS';
@@ -1526,6 +1775,27 @@ async function main() {
                 color: #4caf50;
                 margin-right: 8px;
               }
+              .api-key-box {
+                background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+                padding: 24px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #ff9800;
+              }
+              .api-key-box strong {
+                color: #e65100;
+                font-size: 18px;
+              }
+              .api-key-value {
+                background: #fff;
+                padding: 16px;
+                border-radius: 6px;
+                margin: 12px 0;
+                font-family: 'Monaco', 'Menlo', monospace;
+                font-size: 14px;
+                word-break: break-all;
+                border: 2px solid #ff9800;
+              }
             </style>
           </head>
           <body>
@@ -1540,6 +1810,30 @@ async function main() {
                   <span class="check">✓</span>Auto-refresh enabled (valid for ${Math.floor(expiresIn / 3600)} hours)
                 </p>
               </div>
+
+              ${isNewUser ? `
+              <div class="api-key-box">
+                <strong>🔑 Your API Key (Save This!)</strong>
+                <p class="detail" style="margin-top: 12px;">
+                  This is your unique API key for connecting to the MCP server.
+                  <strong>Save it now - it won't be shown again!</strong>
+                </p>
+                <div class="api-key-value" id="api-key">${newUserApiKey}</div>
+                <button class="copy-btn" onclick="copyApiKey()">📋 Copy API Key</button>
+                <p class="detail" style="margin-top: 12px; margin-bottom: 0;">
+                  Use this API key in your MCP client configuration:<br>
+                  <code>http://your-server-url/sse?apiKey=${newUserApiKey}</code>
+                </p>
+              </div>
+              <script>
+                function copyApiKey() {
+                  const text = document.getElementById('api-key').textContent;
+                  navigator.clipboard.writeText(text).then(() => {
+                    alert('✅ API Key copied to clipboard!');
+                  });
+                }
+              </script>
+              ` : ''}
 
               ${isRender && renderAutoUpdated ? `
               <div class="render-success">
