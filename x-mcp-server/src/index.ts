@@ -12,8 +12,27 @@ import express from 'express';
 import cors from 'cors';
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 
 dotenv.config();
+
+// Multi-user mode flag
+const MULTI_USER_MODE = process.env.MULTI_USER_MODE === 'true';
+
+// User configuration
+interface User {
+  userId: string;
+  apiKey: string;
+  name: string;
+  xClientId: string;
+  xClientSecret: string;
+  callbackUrl: string;
+}
+
+// User store loaded from users.json
+interface UserStore {
+  users: User[];
+}
 
 // OAuth 2.0 token storage (persisted to local file)
 interface TokenStore {
@@ -24,17 +43,60 @@ interface TokenStore {
   expiresAt?: number; // Timestamp when token expires
 }
 
-// Path to token storage file
-// On Render, use persistent disk if available, otherwise fallback to temp directory
-// Render persistent disk is mounted at /opt/render/project/src if configured
-const TOKEN_FILE_PATH = process.env.RENDER_DISK_PATH 
-  ? join(process.env.RENDER_DISK_PATH, '.tokens.json')
-  : join(process.cwd(), '.tokens.json');
+// Load users from users.json file
+let userStore: UserStore = { users: [] };
+
+async function loadUsers(): Promise<UserStore> {
+  if (!MULTI_USER_MODE) {
+    console.error('[AUTH] Single-user mode enabled');
+    return { users: [] };
+  }
+
+  try {
+    const usersFilePath = join(process.cwd(), 'users.json');
+    const data = await fs.readFile(usersFilePath, 'utf-8');
+    const store = JSON.parse(data) as UserStore;
+    console.error(`[AUTH] ✅ Loaded ${store.users.length} users from users.json`);
+    return store;
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      console.error('[AUTH] ⚠️  users.json not found. Create it from users.json.example');
+    } else {
+      console.error('[AUTH] ⚠️  Error loading users.json:', error.message);
+    }
+    return { users: [] };
+  }
+}
+
+// Authenticate user by API key
+function getUserByApiKey(apiKey: string): User | undefined {
+  if (!MULTI_USER_MODE) {
+    return undefined;
+  }
+  return userStore.users.find(u => u.apiKey === apiKey);
+}
+
+// Get token file path for a specific user
+function getTokenFilePath(userId?: string): string {
+  const basePath = process.env.RENDER_DISK_PATH
+    ? process.env.RENDER_DISK_PATH
+    : process.cwd();
+
+  if (userId) {
+    return join(basePath, `.tokens-${userId}.json`);
+  }
+  // Fallback for single-user mode
+  return join(basePath, '.tokens.json');
+}
 
 // Load tokens from local file or environment variable (for Render persistence)
-async function loadTokens(): Promise<TokenStore> {
+async function loadTokens(userId?: string): Promise<TokenStore> {
+  const tokenFilePath = getTokenFilePath(userId);
+
   // First, try loading from environment variable (survives Render restarts)
-  const envTokens = process.env.X_OAUTH_TOKENS;
+  // In multi-user mode, use X_OAUTH_TOKENS_{userId}
+  const envVarName = userId ? `X_OAUTH_TOKENS_${userId.toUpperCase()}` : 'X_OAUTH_TOKENS';
+  const envTokens = process.env[envVarName];
   if (envTokens) {
     try {
       // Trim whitespace and handle quoted strings (common when copying from UI)
@@ -81,16 +143,18 @@ async function loadTokens(): Promise<TokenStore> {
   
   // Fallback to file storage
   try {
-    const data = await fs.readFile(TOKEN_FILE_PATH, 'utf-8');
+    const data = await fs.readFile(tokenFilePath, 'utf-8');
     const tokens = JSON.parse(data) as TokenStore;
-    console.error('[AUTH] ✅ OAuth 2.0 tokens loaded from local storage');
+    const userLabel = userId ? `for user ${userId}` : '';
+    console.error(`[AUTH] ✅ OAuth 2.0 tokens loaded from local storage ${userLabel}`);
     if (tokens.expiresAt) {
       console.error('[AUTH] Token expires at:', new Date(tokens.expiresAt).toISOString());
     }
     return tokens;
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      console.error('[AUTH] ⚠️  No OAuth 2.0 tokens found. Visit /authorize to authenticate.');
+      const userLabel = userId ? `for user ${userId}` : '';
+      console.error(`[AUTH] ⚠️  No OAuth 2.0 tokens found ${userLabel}. Visit /authorize to authenticate.`);
       return {};
     }
     console.error('[AUTH] ⚠️  Error loading tokens:', error.message);
@@ -99,18 +163,22 @@ async function loadTokens(): Promise<TokenStore> {
 }
 
 // Save tokens to local file and optionally to environment variable instructions
-async function saveTokens(tokens: TokenStore): Promise<void> {
+async function saveTokens(tokens: TokenStore, userId?: string): Promise<void> {
+  const tokenFilePath = getTokenFilePath(userId);
+
   try {
     // Save to file
-    await fs.writeFile(TOKEN_FILE_PATH, JSON.stringify(tokens, null, 2), 'utf-8');
-    console.error('[AUTH] ✅ Tokens saved to local storage');
+    await fs.writeFile(tokenFilePath, JSON.stringify(tokens, null, 2), 'utf-8');
+    const userLabel = userId ? `for user ${userId}` : '';
+    console.error(`[AUTH] ✅ Tokens saved to local storage ${userLabel}`);
     
     // On Render, tokens in files don't persist across restarts
     // Log instructions for manual persistence via environment variable
     if (process.env.RENDER) {
       const tokenJson = JSON.stringify(tokens);
+      const envVarName = userId ? `X_OAUTH_TOKENS_${userId.toUpperCase()}` : 'X_OAUTH_TOKENS';
       console.error('[AUTH] ⚠️  Render detected: Tokens will be lost on restart.');
-      console.error('[AUTH] 💡 To persist tokens, set X_OAUTH_TOKENS environment variable in Render dashboard:');
+      console.error(`[AUTH] 💡 To persist tokens, set ${envVarName} environment variable in Render dashboard:`);
       console.error(`[AUTH]    Value: ${tokenJson.substring(0, 100)}...`);
       console.error('[AUTH]    Full value length:', tokenJson.length, 'characters');
     }
@@ -120,24 +188,51 @@ async function saveTokens(tokens: TokenStore): Promise<void> {
   }
 }
 
-// Initialize token store from local file
-let tokenStore: TokenStore = {};
+// Initialize token stores - Map of userId to TokenStore
+const tokenStores: Map<string, TokenStore> = new Map();
 
-// Load tokens on startup
-loadTokens().then(tokens => {
-  tokenStore = tokens;
+// Load users and tokens on startup
+loadUsers().then(async (store) => {
+  userStore = store;
+
+  // In multi-user mode, pre-load tokens for all users
+  if (MULTI_USER_MODE) {
+    for (const user of userStore.users) {
+      try {
+        const tokens = await loadTokens(user.userId);
+        tokenStores.set(user.userId, tokens);
+      } catch (err) {
+        console.error(`[AUTH] Failed to load tokens for user ${user.userId}:`, err);
+      }
+    }
+  } else {
+    // Single-user mode - load tokens without userId
+    const tokens = await loadTokens();
+    tokenStores.set('default', tokens);
+  }
 }).catch(err => {
-  console.error('[AUTH] Failed to load tokens on startup:', err);
+  console.error('[AUTH] Failed to load users on startup:', err);
 });
 
-// OAuth 2.0 client for authorization flow
-const oauth2Client = new TwitterApi({
-  clientId: process.env.X_CLIENT_ID || '',
-  clientSecret: process.env.X_CLIENT_SECRET || '',
-});
+// Get OAuth 2.0 client for a specific user or default credentials
+function getOAuth2Client(user?: User): TwitterApi {
+  if (user) {
+    return new TwitterApi({
+      clientId: user.xClientId,
+      clientSecret: user.xClientSecret,
+    });
+  }
+  // Fallback to environment variables for single-user mode
+  return new TwitterApi({
+    clientId: process.env.X_CLIENT_ID || '',
+    clientSecret: process.env.X_CLIENT_SECRET || '',
+  });
+}
 
 // Function to refresh OAuth 2.0 access token if expired
-async function refreshAccessTokenIfNeeded(): Promise<void> {
+async function refreshAccessTokenIfNeeded(userId: string, user?: User): Promise<void> {
+  const tokenStore = tokenStores.get(userId) || {};
+
   if (!tokenStore.refreshToken) {
     return;
   }
@@ -153,8 +248,9 @@ async function refreshAccessTokenIfNeeded(): Promise<void> {
   }
 
   try {
-    console.error('[AUTH] 🔄 Access token expired or expiring soon, refreshing...');
+    console.error(`[AUTH] 🔄 Access token expired or expiring soon for user ${userId}, refreshing...`);
 
+    const oauth2Client = getOAuth2Client(user);
     const {
       client: refreshedClient,
       accessToken,
@@ -163,24 +259,29 @@ async function refreshAccessTokenIfNeeded(): Promise<void> {
     } = await oauth2Client.refreshOAuth2Token(tokenStore.refreshToken);
 
     // Update token store
-    tokenStore.accessToken = accessToken;
-    tokenStore.refreshToken = refreshToken || tokenStore.refreshToken;
-    tokenStore.expiresIn = expiresIn;
-    tokenStore.expiresAt = Date.now() + (expiresIn * 1000);
-    tokenStore.tokenType = 'Bearer';
+    const updatedTokens: TokenStore = {
+      accessToken,
+      refreshToken: refreshToken || tokenStore.refreshToken,
+      expiresIn,
+      expiresAt: Date.now() + (expiresIn * 1000),
+      tokenType: 'Bearer',
+    };
+
+    tokenStores.set(userId, updatedTokens);
 
     // Save to local file
-    await saveTokens(tokenStore);
+    await saveTokens(updatedTokens, userId);
 
     console.error('[AUTH] ✅ Token refreshed successfully!');
-    console.error('[AUTH] New token expires at:', new Date(tokenStore.expiresAt).toISOString());
+    console.error('[AUTH] New token expires at:', new Date(updatedTokens.expiresAt!).toISOString());
   } catch (error: any) {
-    console.error('[AUTH] ❌ Failed to refresh token:', error.message);
+    console.error(`[AUTH] ❌ Failed to refresh token for user ${userId}:`, error.message);
     console.error('[AUTH] You may need to re-authorize at /authorize');
     // Clear invalid tokens
-    tokenStore = {};
+    tokenStores.set(userId, {});
     try {
-      await fs.unlink(TOKEN_FILE_PATH);
+      const tokenFilePath = getTokenFilePath(userId);
+      await fs.unlink(tokenFilePath);
     } catch {
       // Ignore errors deleting token file
     }
@@ -188,17 +289,23 @@ async function refreshAccessTokenIfNeeded(): Promise<void> {
 }
 
 // Function to get Twitter client (OAuth 2.0 only)
-async function getTwitterClient(): Promise<TwitterApi> {
+async function getTwitterClient(userId: string = 'default', user?: User): Promise<TwitterApi> {
   // Ensure tokens are loaded
-  if (!tokenStore.accessToken) {
-    tokenStore = await loadTokens();
+  let tokenStore = tokenStores.get(userId);
+  if (!tokenStore || !tokenStore.accessToken) {
+    tokenStore = await loadTokens(userId !== 'default' ? userId : undefined);
+    tokenStores.set(userId, tokenStore);
   }
 
   // Try to refresh token if needed
-  await refreshAccessTokenIfNeeded();
+  await refreshAccessTokenIfNeeded(userId, user);
+
+  // Re-fetch token store after potential refresh
+  tokenStore = tokenStores.get(userId) || {};
 
   if (!tokenStore.accessToken) {
-    throw new Error('No OAuth 2.0 access token available. Please visit /authorize to authenticate.');
+    const userLabel = userId !== 'default' ? `for user ${userId}` : '';
+    throw new Error(`No OAuth 2.0 access token available ${userLabel}. Please visit /authorize to authenticate.`);
   }
 
   // Validate token format (OAuth 2.0 tokens are typically base64-like strings)
@@ -206,14 +313,12 @@ async function getTwitterClient(): Promise<TwitterApi> {
     console.error('[AUTH] ⚠️  Access token seems too short:', tokenStore.accessToken.length);
   }
 
-  console.error('[AUTH] Using OAuth 2.0 token');
+  const userLabel = userId !== 'default' ? `for user ${userId}` : '';
+  console.error(`[AUTH] Using OAuth 2.0 token ${userLabel}`);
   console.error('[AUTH] Token preview:', tokenStore.accessToken.substring(0, 20) + '...');
-  
+
   return new TwitterApi(tokenStore.accessToken);
 }
-
-// Initialize rwClient (will be set by getTwitterClient() when needed)
-let rwClient: any;
 
 // Define available tools
 const TOOLS: Tool[] = [
@@ -431,16 +536,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 // Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   console.error(`[TOOL] 🔧 Tool call received: ${name}`);
   console.error(`[TOOL] Arguments:`, JSON.stringify(args, null, 2));
-  
+
   try {
+    // Get user context from AsyncLocalStorage (set during message handling)
+    const context = sessionContext.getStore();
+    const sessionId = context?.sessionId;
+    const userContext = sessionId ? sessionToUser.get(sessionId) : null;
+
+    let userId = 'default';
+    let user: User | undefined;
+
+    if (MULTI_USER_MODE) {
+      if (!userContext) {
+        throw new Error('Authentication required. Please reconnect with valid API key.');
+      }
+      userId = userContext.userId;
+      user = userContext.user;
+      console.error(`[TOOL] Authenticated as user: ${userId}`);
+    }
+
     // Refresh client to use latest OAuth 2.0 token if available
     console.error(`[TOOL] 🔄 Getting Twitter client...`);
-    const client = await getTwitterClient();
-    rwClient = client.readWrite;
+    const client = await getTwitterClient(userId, user);
+    const rwClient = client.readWrite;
     console.error(`[TOOL] ✅ Twitter client ready`);
 
     switch (name) {
@@ -799,6 +921,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Store transports by session ID
 const transports: Map<string, SSEServerTransport> = new Map();
 
+// Map session IDs to user IDs for authenticated sessions
+const sessionToUser: Map<string, { userId: string; user?: User }> = new Map();
+
+// AsyncLocalStorage for tracking current session context
+const sessionContext = new AsyncLocalStorage<{ sessionId: string }>();
+
 // Start HTTP server with SSE
 async function main() {
   const app = express();
@@ -814,6 +942,41 @@ async function main() {
     console.error('[SSE] Accept:', req.headers['accept']);
 
     try {
+      // STEP 1.5: Authenticate user (multi-user mode only)
+      let userId = 'default';
+      let user: User | undefined;
+
+      if (MULTI_USER_MODE) {
+        // Extract API key from header or query parameter
+        const apiKey = req.headers['x-api-key'] as string || req.query.apiKey as string;
+
+        if (!apiKey) {
+          console.error('[SSE] ❌ No API key provided in multi-user mode');
+          if (!res.headersSent) {
+            res.status(401).json({
+              error: 'Authentication required',
+              message: 'Please provide API key via X-API-Key header or apiKey query parameter'
+            });
+          }
+          return;
+        }
+
+        user = getUserByApiKey(apiKey);
+        if (!user) {
+          console.error('[SSE] ❌ Invalid API key provided');
+          if (!res.headersSent) {
+            res.status(401).json({
+              error: 'Invalid API key',
+              message: 'The provided API key is not valid'
+            });
+          }
+          return;
+        }
+
+        userId = user.userId;
+        console.error(`[SSE] ✅ Authenticated as user: ${userId} (${user.name})`);
+      }
+
       console.error('[SSE] STEP 2: Creating SSEServerTransport...');
       const transport = new SSEServerTransport('/message', res);
 
@@ -822,13 +985,20 @@ async function main() {
       transports.set(sessionId, transport);
       console.error('[SSE] Session ID:', sessionId);
 
+      // Store user context for this session
+      sessionToUser.set(sessionId, { userId, user });
+      console.error(`[SSE] Session ${sessionId} mapped to user ${userId}`);
+
       // Set up onclose handler to clean up transport when closed
       transport.onclose = () => {
         console.error(`[SSE] ⚠️  Transport closed for session ${sessionId}`);
         transports.delete(sessionId);
+        sessionToUser.delete(sessionId);
       };
 
       console.error('[SSE] STEP 3: Connecting server to transport...');
+      // Store session ID in transport metadata for request handlers
+      (transport as any)._meta = { sessionId };
       await server.connect(transport);
 
       console.error('[SSE] STEP 4: ✅ Transport connected successfully!');
@@ -867,63 +1037,142 @@ async function main() {
   app.use(express.json());
 
   // Health check endpoint
-  app.get('/health', async (_req, res) => {
-    // Reload tokens to get latest status
-    if (!tokenStore.accessToken) {
-      tokenStore = await loadTokens();
-    }
-    
+  app.get('/health', async (req, res) => {
     const now = Date.now();
-    const expiresAt = tokenStore.expiresAt;
-    const isExpired = expiresAt ? expiresAt < now : false;
-    const timeUntilExpiry = expiresAt ? Math.max(0, expiresAt - now) : 0;
-    
-    // Try to validate token if available
-    let tokenValid = false;
-    let tokenValidationError = null;
-    if (tokenStore.accessToken) {
-      try {
-        const testClient = new TwitterApi(tokenStore.accessToken);
-        await testClient.v2.me();
-        tokenValid = true;
-      } catch (error: any) {
-        tokenValid = false;
-        tokenValidationError = error.message;
-      }
-    }
 
-    res.json({
-      status: 'ok',
-      service: 'x-mcp-server',
-      version: '1.0.0',
-      authenticated: !!tokenStore.accessToken,
-      tokenValid,
-      authType: 'OAuth 2.0',
-      tokenStatus: tokenStore.accessToken ? {
-        hasRefreshToken: !!tokenStore.refreshToken,
-        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
-        isExpired,
-        timeUntilExpirySeconds: Math.floor(timeUntilExpiry / 1000),
-        tokenLength: tokenStore.accessToken.length,
-        validationError: tokenValidationError,
-      } : null,
-      endpoints: {
-        health: '/health',
-        sse: '/sse',
-        message: '/message',
-        tools: '/tools',
-        authorize: '/authorize',
-        callback: '/callback'
+    if (MULTI_USER_MODE) {
+      // Multi-user health check
+      const userStatuses = [];
+
+      for (const user of userStore.users) {
+        const userId = user.userId;
+        const tokenStore = tokenStores.get(userId) || {};
+
+        const expiresAt = tokenStore.expiresAt;
+        const isExpired = expiresAt ? expiresAt < now : false;
+        const timeUntilExpiry = expiresAt ? Math.max(0, expiresAt - now) : 0;
+
+        userStatuses.push({
+          userId: userId,
+          name: user.name,
+          authenticated: !!tokenStore.accessToken,
+          hasRefreshToken: !!tokenStore.refreshToken,
+          expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+          isExpired,
+          timeUntilExpirySeconds: Math.floor(timeUntilExpiry / 1000),
+        });
       }
-    });
+
+      res.json({
+        status: 'ok',
+        service: 'x-mcp-server',
+        version: '1.0.0',
+        mode: 'multi-user',
+        totalUsers: userStore.users.length,
+        activeSessions: transports.size,
+        users: userStatuses,
+        endpoints: {
+          health: '/health',
+          sse: '/sse (requires X-API-Key header or apiKey query param)',
+          message: '/message',
+          tools: '/tools',
+          authorize: '/authorize?apiKey=YOUR_API_KEY or /authorize?userId=USER_ID',
+          callback: '/callback',
+        }
+      });
+    } else {
+      // Single-user health check
+      const tokenStore = tokenStores.get('default') || {};
+
+      const expiresAt = tokenStore.expiresAt;
+      const isExpired = expiresAt ? expiresAt < now : false;
+      const timeUntilExpiry = expiresAt ? Math.max(0, expiresAt - now) : 0;
+
+      // Try to validate token if available
+      let tokenValid = false;
+      let tokenValidationError = null;
+      if (tokenStore.accessToken) {
+        try {
+          const testClient = new TwitterApi(tokenStore.accessToken);
+          await testClient.v2.me();
+          tokenValid = true;
+        } catch (error: any) {
+          tokenValid = false;
+          tokenValidationError = error.message;
+        }
+      }
+
+      res.json({
+        status: 'ok',
+        service: 'x-mcp-server',
+        version: '1.0.0',
+        mode: 'single-user',
+        authenticated: !!tokenStore.accessToken,
+        tokenValid,
+        authType: 'OAuth 2.0',
+        tokenStatus: tokenStore.accessToken ? {
+          hasRefreshToken: !!tokenStore.refreshToken,
+          expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+          isExpired,
+          timeUntilExpirySeconds: Math.floor(timeUntilExpiry / 1000),
+          tokenLength: tokenStore.accessToken.length,
+          validationError: tokenValidationError,
+        } : null,
+        endpoints: {
+          health: '/health',
+          sse: '/sse',
+          message: '/message',
+          tools: '/tools',
+          authorize: '/authorize',
+          callback: '/callback'
+        }
+      });
+    }
   });
 
   // OAuth 2.0 Authorization endpoint
-  app.get('/authorize', async (_req, res) => {
+  app.get('/authorize', async (req, res) => {
     try {
       console.error('[OAUTH] Starting OAuth 2.0 authorization flow...');
 
-      const callbackURL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
+      // In multi-user mode, require userId or apiKey parameter
+      let userId = 'default';
+      let user: User | undefined;
+
+      if (MULTI_USER_MODE) {
+        const apiKey = req.query.apiKey as string || req.headers['x-api-key'] as string;
+        const userIdParam = req.query.userId as string;
+
+        if (apiKey) {
+          user = getUserByApiKey(apiKey);
+          if (!user) {
+            return res.status(401).json({
+              error: 'Invalid API key',
+              message: 'The provided API key is not valid'
+            });
+          }
+          userId = user.userId;
+        } else if (userIdParam) {
+          user = userStore.users.find(u => u.userId === userIdParam);
+          if (!user) {
+            return res.status(404).json({
+              error: 'User not found',
+              message: `No user found with ID: ${userIdParam}`
+            });
+          }
+          userId = user.userId;
+        } else {
+          return res.status(400).json({
+            error: 'Missing authentication',
+            message: 'In multi-user mode, provide apiKey or userId query parameter'
+          });
+        }
+
+        console.error(`[OAUTH] Authorizing for user: ${userId} (${user.name})`);
+      }
+
+      const oauth2Client = getOAuth2Client(user);
+      const callbackURL = user?.callbackUrl || process.env.CALLBACK_URL || 'http://localhost:3000/callback';
 
       // Generate authorization URL with PKCE
       // Scopes required for bookmarks: tweet.read, users.read, bookmark.read, bookmark.write
@@ -944,19 +1193,23 @@ async function main() {
         }
       );
 
-      // Store code verifier and state for callback validation
+      // Store code verifier, state, and userId for callback validation
       // Try to persist to file for Render compatibility (survives restarts)
       // Fallback to in-memory if file write fails
-      const stateFilePath = process.env.RENDER_DISK_PATH 
-        ? join(process.env.RENDER_DISK_PATH, '.oauth-state.json')
-        : join(process.cwd(), '.oauth-state.json');
-      
+      const stateFileName = userId !== 'default' ? `.oauth-state-${userId}.json` : '.oauth-state.json';
+      const stateFilePath = process.env.RENDER_DISK_PATH
+        ? join(process.env.RENDER_DISK_PATH, stateFileName)
+        : join(process.cwd(), stateFileName);
+
       try {
-        await fs.writeFile(stateFilePath, JSON.stringify({ codeVerifier, state, timestamp: Date.now() }), 'utf-8');
+        await fs.writeFile(stateFilePath, JSON.stringify({ codeVerifier, state, userId, timestamp: Date.now() }), 'utf-8');
         console.error('[OAUTH] State saved to file for persistence');
       } catch (error: any) {
         console.error('[OAUTH] Could not save state to file, using in-memory:', error.message);
-        (global as any).oauth2State = { codeVerifier, state };
+        if (!(global as any).oauth2States) {
+          (global as any).oauth2States = new Map();
+        }
+        (global as any).oauth2States.set(state, { codeVerifier, state, userId, timestamp: Date.now() });
       }
 
       console.error('[OAUTH] Authorization URL generated');
@@ -987,28 +1240,62 @@ async function main() {
 
       // Retrieve stored state and code verifier
       // Try to load from file first (for Render persistence), then fallback to memory
-      const stateFilePath = process.env.RENDER_DISK_PATH 
-        ? join(process.env.RENDER_DISK_PATH, '.oauth-state.json')
-        : join(process.cwd(), '.oauth-state.json');
-      
       let storedData: any = null;
-      
-      try {
-        const stateData = await fs.readFile(stateFilePath, 'utf-8');
-        storedData = JSON.parse(stateData);
-        // Clean up state file after reading
-        await fs.unlink(stateFilePath).catch(() => {});
-        console.error('[OAUTH] State loaded from file');
-      } catch (error: any) {
-        // Fallback to in-memory state
-        storedData = (global as any).oauth2State;
-        console.error('[OAUTH] State loaded from memory');
+      let stateFilePathToDelete: string | null = null;
+
+      // Try multiple state file locations (for multi-user support)
+      const possibleStatePaths = [
+        process.env.RENDER_DISK_PATH
+          ? join(process.env.RENDER_DISK_PATH, '.oauth-state.json')
+          : join(process.cwd(), '.oauth-state.json')
+      ];
+
+      // Also check for user-specific state files
+      if (MULTI_USER_MODE) {
+        for (const user of userStore.users) {
+          const stateFileName = `.oauth-state-${user.userId}.json`;
+          possibleStatePaths.push(
+            process.env.RENDER_DISK_PATH
+              ? join(process.env.RENDER_DISK_PATH, stateFileName)
+              : join(process.cwd(), stateFileName)
+          );
+        }
+      }
+
+      // Try to load state from files
+      for (const filePath of possibleStatePaths) {
+        try {
+          const stateData = await fs.readFile(filePath, 'utf-8');
+          const data = JSON.parse(stateData);
+          if (data.state === state) {
+            storedData = data;
+            stateFilePathToDelete = filePath;
+            console.error('[OAUTH] State loaded from file:', filePath);
+            break;
+          }
+        } catch (error: any) {
+          // File doesn't exist or can't be read, continue to next
+        }
+      }
+
+      // Fallback to in-memory state
+      if (!storedData && (global as any).oauth2States) {
+        storedData = (global as any).oauth2States.get(state);
+        if (storedData) {
+          console.error('[OAUTH] State loaded from memory');
+          (global as any).oauth2States.delete(state);
+        }
       }
 
       if (!storedData) {
         throw new Error('No OAuth state found. Please restart authorization by visiting /authorize again.');
       }
-      
+
+      // Clean up state file after reading
+      if (stateFilePathToDelete) {
+        await fs.unlink(stateFilePathToDelete).catch(() => {});
+      }
+
       // Check if state is too old (more than 10 minutes)
       if (storedData.timestamp && Date.now() - storedData.timestamp > 10 * 60 * 1000) {
         throw new Error('OAuth state expired. Please restart authorization.');
@@ -1018,9 +1305,13 @@ async function main() {
         throw new Error('State mismatch - possible CSRF attack');
       }
 
-      console.error('[OAUTH] Exchanging code for token...');
+      const userId = storedData.userId || 'default';
+      const user = userId !== 'default' ? userStore.users.find(u => u.userId === userId) : undefined;
 
-      const callbackURL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
+      console.error(`[OAUTH] Exchanging code for token for user: ${userId}...`);
+
+      const oauth2Client = getOAuth2Client(user);
+      const callbackURL = user?.callbackUrl || process.env.CALLBACK_URL || 'http://localhost:3000/callback';
 
       // Exchange code for access token
       const {
@@ -1036,28 +1327,27 @@ async function main() {
 
       // Store tokens
       const expiresAt = Date.now() + (expiresIn * 1000);
-      tokenStore.accessToken = accessToken;
-      tokenStore.refreshToken = refreshToken;
-      tokenStore.expiresIn = expiresIn;
-      tokenStore.expiresAt = expiresAt;
-      tokenStore.tokenType = 'Bearer';
+      const newTokens: TokenStore = {
+        accessToken,
+        refreshToken,
+        expiresIn,
+        expiresAt,
+        tokenType: 'Bearer',
+      };
 
-      // Save tokens to local file
-      await saveTokens(tokenStore);
+      // Save tokens to user-specific storage
+      tokenStores.set(userId, newTokens);
+      await saveTokens(newTokens, userId !== 'default' ? userId : undefined);
 
-      // Update the global client
-      rwClient = loggedClient.readWrite;
-
-      // Clean up stored state (already deleted if loaded from file)
-      delete (global as any).oauth2State;
-
-      console.error('[OAUTH] ✅ Successfully authenticated with OAuth 2.0!');
+      console.error(`[OAUTH] ✅ Successfully authenticated with OAuth 2.0 for user ${userId}!`);
       console.error('[OAUTH] Access token obtained (expires in', expiresIn, 'seconds)');
       console.error('[OAUTH] Token expires at:', new Date(expiresAt).toISOString());
-      console.error('[OAUTH] Tokens saved to local storage (.tokens.json)');
+      const tokenFileName = userId !== 'default' ? `.tokens-${userId}.json` : '.tokens.json';
+      console.error(`[OAUTH] Tokens saved to local storage (${tokenFileName})`);
 
       // Prepare token JSON for environment variable (for Render persistence)
-      const tokenJson = JSON.stringify(tokenStore);
+      const tokenJson = JSON.stringify(newTokens);
+      const envVarName = userId !== 'default' ? `X_OAUTH_TOKENS_${userId.toUpperCase()}` : 'X_OAUTH_TOKENS';
       const isRender = !!process.env.RENDER;
 
       res.send(`
@@ -1088,7 +1378,8 @@ async function main() {
 
             <div class="success">
               <strong>Your X MCP Server is now authenticated with OAuth 2.0!</strong><br>
-              <p>Your OAuth 2.0 tokens have been saved to <code>.tokens.json</code> and will be automatically refreshed before expiration.</p>
+              ${userId !== 'default' ? `<p><strong>User:</strong> ${userId}${user ? ` (${user.name})` : ''}</p>` : ''}
+              <p>Your OAuth 2.0 tokens have been saved to <code>${tokenFileName}</code> and will be automatically refreshed before expiration.</p>
               <p><strong>Scopes granted:</strong> tweet.read, users.read, bookmark.read, bookmark.write, tweet.write, like.read, like.write, offline.access</p>
               <p><strong>Token expires:</strong> ${new Date(expiresAt).toLocaleString()}</p>
             </div>
@@ -1102,7 +1393,7 @@ async function main() {
                 <strong>Step 1:</strong> Copy the token JSON below<br>
                 <strong>Step 2:</strong> Go to Render Dashboard → Your Service → Environment<br>
                 <strong>Step 3:</strong> Add environment variable:<br>
-                <code>Key:</code> <strong>X_OAUTH_TOKENS</strong><br>
+                <code>Key:</code> <strong>${envVarName}</strong><br>
                 <code>Value:</code> (paste the JSON below)
               </div>
               <div class="code-block" id="token-json">${tokenJson}</div>
@@ -1142,24 +1433,50 @@ async function main() {
   });
 
   // Token validation endpoint (for debugging)
-  app.get('/validate-token', async (_req, res) => {
-    if (!tokenStore.accessToken) {
-      tokenStore = await loadTokens();
+  app.get('/validate-token', async (req, res) => {
+    // In multi-user mode, require userId or apiKey parameter
+    let userId = 'default';
+    let user: User | undefined;
+
+    if (MULTI_USER_MODE) {
+      const apiKey = req.query.apiKey as string || req.headers['x-api-key'] as string;
+      const userIdParam = req.query.userId as string;
+
+      if (apiKey) {
+        user = getUserByApiKey(apiKey);
+        if (!user) {
+          return res.status(401).json({
+            valid: false,
+            error: 'Invalid API key'
+          });
+        }
+        userId = user.userId;
+      } else if (userIdParam) {
+        userId = userIdParam;
+      } else {
+        return res.status(400).json({
+          valid: false,
+          error: 'In multi-user mode, provide apiKey or userId query parameter'
+        });
+      }
     }
+
+    const tokenStore = tokenStores.get(userId) || {};
 
     if (!tokenStore.accessToken) {
       return res.json({
         valid: false,
+        userId: userId !== 'default' ? userId : undefined,
         error: 'No token found. Visit /authorize to authenticate.'
       });
     }
 
     try {
       const client = new TwitterApi(tokenStore.accessToken);
-      
+
       // Test 1: Get user info
       const me = await client.v2.me();
-      
+
       // Test 2: Try to get bookmarks (this is what's failing)
       let bookmarksTest: { success: boolean; error: any } = { success: false, error: null };
       try {
@@ -1175,6 +1492,7 @@ async function main() {
 
       res.json({
         valid: true,
+        userId: userId !== 'default' ? userId : undefined,
         user: {
           id: me.data.id,
           username: me.data.username,
@@ -1186,13 +1504,14 @@ async function main() {
           tokenLength: tokenStore.accessToken.length
         },
         bookmarksTest,
-        message: bookmarksTest.success 
+        message: bookmarksTest.success
           ? 'Token is valid and can access bookmarks'
           : 'Token is valid but cannot access bookmarks. Check app permissions and scopes.'
       });
     } catch (error: any) {
       res.json({
         valid: false,
+        userId: userId !== 'default' ? userId : undefined,
         error: {
           code: error.code,
           message: error.message,
@@ -1242,8 +1561,11 @@ async function main() {
       
       // Handle the POST message with the transport
       // This will trigger the tool call handler which may take time
+      // Wrap in AsyncLocalStorage context to make sessionId available to request handlers
       console.error(`[MESSAGE] Starting message processing...`);
-      await transport.handlePostMessage(req, res, req.body);
+      await sessionContext.run({ sessionId }, async () => {
+        await transport.handlePostMessage(req, res, req.body);
+      });
       console.error(`[MESSAGE] ✅ Message processing completed`);
     } catch (error: any) {
       console.error('[MESSAGE] ❌ Error handling message:', error.message);

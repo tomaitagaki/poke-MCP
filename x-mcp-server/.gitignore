@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .tokens.json
+.tokens-*.json
+users.json
+.oauth-state.json
+.oauth-state-*.json
 *.log
 .DS_Store
 *.local

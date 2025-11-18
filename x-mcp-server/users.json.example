@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "userId": "user1",
+      "apiKey": "your-secure-random-api-key-here-generate-with-openssl-rand-hex-32",
+      "name": "User One",
+      "xClientId": "your_x_oauth2_client_id_for_user1",
+      "xClientSecret": "your_x_oauth2_client_secret_for_user1",
+      "callbackUrl": "http://localhost:3000/callback"
+    },
+    {
+      "userId": "user2",
+      "apiKey": "another-secure-random-api-key-generate-unique-per-user",
+      "name": "User Two",
+      "xClientId": "your_x_oauth2_client_id_for_user2",
+      "xClientSecret": "your_x_oauth2_client_secret_for_user2",
+      "callbackUrl": "http://localhost:3000/callback"
+    }
+  ]
+}

@@ -10,6 +10,24 @@ A Model Context Protocol (MCP) server for X (formerly Twitter) API integration. 
 - ❤️ **Likes & Retweets** - Like, unlike, retweet, and unretweet posts
 - 🔍 **Search** - Search for tweets using X search operators
 - 📊 **Tweet Details** - Get detailed information about specific tweets
+- 👥 **Multi-User Support** - Concurrent access for multiple users with API key authentication
+
+## Multi-User Mode
+
+This server supports **multi-user mode**, allowing multiple users to concurrently access their X bookmarks through the same server instance. Each user:
+- Has their own API key for secure authentication
+- Uses their own X OAuth credentials
+- Gets isolated token storage and management
+- Can connect simultaneously without conflicts
+
+**📖 See [MULTI_USER_SETUP.md](./MULTI_USER_SETUP.md) for detailed setup instructions.**
+
+Quick multi-user setup:
+1. Set `MULTI_USER_MODE=true` in `.env`
+2. Create `users.json` from `users.json.example`
+3. Configure each user with unique API keys and X OAuth credentials
+4. Each user authorizes at `/authorize?apiKey=THEIR_API_KEY`
+5. Connect with API key via header or query parameter
 
 ## Available Tools
 
