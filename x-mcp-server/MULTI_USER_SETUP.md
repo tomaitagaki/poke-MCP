@@ -211,14 +211,42 @@ All sensitive files are excluded from version control via `.gitignore`.
 
 ### Render.com Deployment
 
-For production deployment on Render.com with persistent tokens:
+For production deployment on Render.com with persistent tokens, you have two options:
+
+#### Option 1: Automatic Token Persistence (Recommended)
+
+Enable automatic environment variable updates using the Render API:
+
+1. **Get your Render API credentials:**
+   - API Key: Visit https://dashboard.render.com/u/settings#api-keys and create an API key
+   - Service ID: Find it in your service URL: `https://dashboard.render.com/web/srv-xxxxx` (the `srv-xxxxx` part)
+
+2. **Configure environment variables in Render:**
+   ```
+   MULTI_USER_MODE=true
+   RENDER_API_KEY=rnd_your_api_key_here
+   RENDER_SERVICE_ID=srv_your_service_id_here
+   ```
+
+3. **Upload `users.json`** as a secret file or configure via environment variables
+
+4. **Authorize each user** by visiting `/authorize?apiKey=THEIR_API_KEY`
+   - The server will automatically create/update the environment variable `X_OAUTH_TOKENS_{USERID}`
+   - You'll see a success message: "🎉 Render Environment Variable Updated!"
+   - Tokens will persist across service restarts
+
+#### Option 2: Manual Token Configuration
+
+If you prefer not to use the Render API or want to manually configure tokens:
 
 1. Set environment variable `MULTI_USER_MODE=true`
-2. Configure each user's OAuth tokens as environment variables:
+2. Each user authorizes at `/authorize?apiKey=THEIR_API_KEY`
+3. Copy the token JSON from the callback page
+4. Manually add environment variables in Render Dashboard:
    - `X_OAUTH_TOKENS_ALICE` - Alice's token JSON
    - `X_OAUTH_TOKENS_BOB` - Bob's token JSON
 
-3. Upload `users.json` as a secret file or configure via environment variables
+5. Upload `users.json` as a secret file or configure via environment variables
 
 ### Security Considerations
 

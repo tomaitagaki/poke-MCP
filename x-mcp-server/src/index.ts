@@ -288,6 +288,75 @@ async function refreshAccessTokenIfNeeded(userId: string, user?: User): Promise<
   }
 }
 
+// Function to automatically update Render environment variable
+async function updateRenderEnvVar(envVarName: string, value: string): Promise<boolean> {
+  const renderApiKey = process.env.RENDER_API_KEY;
+  const renderServiceId = process.env.RENDER_SERVICE_ID;
+
+  if (!renderApiKey || !renderServiceId) {
+    console.error('[RENDER] Missing RENDER_API_KEY or RENDER_SERVICE_ID - skipping auto-update');
+    return false;
+  }
+
+  try {
+    console.error(`[RENDER] Attempting to update environment variable: ${envVarName}`);
+
+    // Render API endpoint to update environment variables
+    const url = `https://api.render.com/v1/services/${renderServiceId}/env-vars`;
+
+    // First, get existing env vars to check if we need to update or create
+    const getResponse = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${renderApiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!getResponse.ok) {
+      console.error('[RENDER] Failed to get existing env vars:', await getResponse.text());
+      return false;
+    }
+
+    const existingVars = await getResponse.json() as any[];
+    const existingVar = existingVars.find((v: any) => v.key === envVarName);
+
+    let method = 'POST';
+    let endpoint = url;
+
+    if (existingVar) {
+      // Update existing variable
+      method = 'PUT';
+      endpoint = `${url}/${existingVar.id}`;
+    }
+
+    // Create or update the environment variable
+    const response = await fetch(endpoint, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${renderApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        key: envVarName,
+        value: value,
+      }),
+    });
+
+    if (response.ok) {
+      console.error(`[RENDER] ✅ Successfully ${existingVar ? 'updated' : 'created'} environment variable: ${envVarName}`);
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.error(`[RENDER] ❌ Failed to update environment variable: ${errorText}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error('[RENDER] ❌ Error updating environment variable:', error.message);
+    return false;
+  }
+}
+
 // Function to get Twitter client (OAuth 2.0 only)
 async function getTwitterClient(userId: string = 'default', user?: User): Promise<TwitterApi> {
   // Ensure tokens are loaded
@@ -1350,60 +1419,166 @@ async function main() {
       const envVarName = userId !== 'default' ? `X_OAUTH_TOKENS_${userId.toUpperCase()}` : 'X_OAUTH_TOKENS';
       const isRender = !!process.env.RENDER;
 
+      // Try to automatically update Render environment variable
+      let renderAutoUpdated = false;
+      if (isRender) {
+        renderAutoUpdated = await updateRenderEnvVar(envVarName, tokenJson);
+      }
+
       res.send(`
         <html>
           <head>
             <title>Authorization Successful</title>
             <style>
-              body { font-family: system-ui; max-width: 900px; margin: 50px auto; padding: 20px; }
-              h1 { color: #1DA1F2; }
-              .success { background: #e8f5e9; padding: 20px; border-radius: 8px; margin: 20px 0; }
-              .warning { background: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107; }
-              .code-block { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; font-family: monospace; font-size: 11px; word-break: break-all; max-height: 200px; overflow-y: auto; }
-              .copy-btn { background: #1DA1F2; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
-              .copy-btn:hover { background: #1a8cd8; }
-              .step { margin: 15px 0; padding: 10px; background: #f9f9f9; border-radius: 4px; }
-            </style>
-            <script>
-              function copyTokens() {
-                const text = document.getElementById('token-json').textContent;
-                navigator.clipboard.writeText(text).then(() => {
-                  alert('Tokens copied to clipboard! Paste into X_OAUTH_TOKENS environment variable in Render.');
-                });
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                max-width: 700px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f7fa;
               }
-            </script>
+              .container {
+                background: white;
+                border-radius: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                padding: 40px;
+              }
+              h1 {
+                color: #1DA1F2;
+                margin: 0 0 30px 0;
+                font-size: 28px;
+              }
+              .success {
+                background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+                padding: 24px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #4caf50;
+              }
+              .success strong {
+                color: #2e7d32;
+                font-size: 18px;
+              }
+              .info-box {
+                background: #f9fafb;
+                padding: 16px;
+                border-radius: 6px;
+                margin: 16px 0;
+                font-size: 14px;
+              }
+              .info-box strong {
+                color: #1976d2;
+              }
+              .render-success {
+                background: linear-gradient(135deg, #e3f2fd 0%, #e1f5fe 100%);
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #2196f3;
+              }
+              .render-success strong {
+                color: #1565c0;
+                font-size: 16px;
+              }
+              .warning {
+                background: #fff8e1;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                border-left: 4px solid #ffa726;
+              }
+              .code-block {
+                background: #263238;
+                color: #aed581;
+                padding: 12px;
+                border-radius: 6px;
+                overflow-x: auto;
+                font-family: 'Monaco', 'Menlo', monospace;
+                font-size: 12px;
+                margin: 12px 0;
+              }
+              .copy-btn {
+                background: #1DA1F2;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+                transition: background 0.2s;
+              }
+              .copy-btn:hover {
+                background: #1a8cd8;
+              }
+              .close-text {
+                text-align: center;
+                margin-top: 30px;
+                color: #78909c;
+                font-size: 14px;
+              }
+              .detail {
+                font-size: 14px;
+                color: #546e7a;
+                margin: 8px 0;
+              }
+              .check {
+                color: #4caf50;
+                margin-right: 8px;
+              }
+            </style>
           </head>
           <body>
-            <h1>✅ Authorization Successful!</h1>
+            <div class="container">
+              <h1>✅ Authorization Successful!</h1>
 
-            <div class="success">
-              <strong>Your X MCP Server is now authenticated with OAuth 2.0!</strong><br>
-              ${userId !== 'default' ? `<p><strong>User:</strong> ${userId}${user ? ` (${user.name})` : ''}</p>` : ''}
-              <p>Your OAuth 2.0 tokens have been saved to <code>${tokenFileName}</code> and will be automatically refreshed before expiration.</p>
-              <p><strong>Scopes granted:</strong> tweet.read, users.read, bookmark.read, bookmark.write, tweet.write, like.read, like.write, offline.access</p>
-              <p><strong>Token expires:</strong> ${new Date(expiresAt).toLocaleString()}</p>
-            </div>
-
-            ${isRender ? `
-            <div class="warning">
-              <strong>⚠️ Render Free Tier Notice:</strong>
-              <p>Tokens saved to files will be <strong>lost when the service restarts</strong> on Render free tier.</p>
-              <p><strong>To persist tokens across restarts:</strong></p>
-              <div class="step">
-                <strong>Step 1:</strong> Copy the token JSON below<br>
-                <strong>Step 2:</strong> Go to Render Dashboard → Your Service → Environment<br>
-                <strong>Step 3:</strong> Add environment variable:<br>
-                <code>Key:</code> <strong>${envVarName}</strong><br>
-                <code>Value:</code> (paste the JSON below)
+              <div class="success">
+                <strong>Your X account is now connected!</strong>
+                <p class="detail" style="margin-top: 12px; margin-bottom: 0;">
+                  ${userId !== 'default' ? `<span class="check">✓</span>User: <strong>${userId}${user ? ` (${user.name})` : ''}</strong><br>` : ''}
+                  <span class="check">✓</span>Tokens saved and ready to use<br>
+                  <span class="check">✓</span>Auto-refresh enabled (valid for ${Math.floor(expiresIn / 3600)} hours)
+                </p>
               </div>
-              <div class="code-block" id="token-json">${tokenJson}</div>
-              <button class="copy-btn" onclick="copyTokens()">Copy Token JSON</button>
-            </div>
-            ` : ''}
 
-            <p style="text-align: center; margin-top: 40px; color: #666;">
-              You can now close this window and return to Poke.
-            </p>
+              ${isRender && renderAutoUpdated ? `
+              <div class="render-success">
+                <strong>🎉 Render Environment Variable Updated!</strong>
+                <p class="detail" style="margin-top: 12px; margin-bottom: 0;">
+                  Your tokens have been automatically saved to Render's environment variables
+                  as <code>${envVarName}</code>. They will persist across service restarts.
+                </p>
+              </div>
+              ` : ''}
+
+              ${isRender && !renderAutoUpdated ? `
+              <div class="warning">
+                <strong>📋 Manual Setup Required</strong>
+                <p class="detail">To persist tokens across restarts, add them to your Render environment variables:</p>
+                <div class="info-box">
+                  <strong>Variable Name:</strong><br>
+                  <code>${envVarName}</code>
+                </div>
+                <button class="copy-btn" onclick="copyTokens()">📋 Copy Token Value</button>
+                <div class="code-block" id="token-json" style="display: none;">${tokenJson}</div>
+                <p class="detail" style="margin-top: 12px;">
+                  Go to Render Dashboard → Your Service → Environment → Add Variable
+                </p>
+              </div>
+              <script>
+                function copyTokens() {
+                  const text = document.getElementById('token-json').textContent;
+                  navigator.clipboard.writeText(text).then(() => {
+                    alert('✅ Token copied! Paste it into Render Dashboard → Environment Variables');
+                  });
+                }
+              </script>
+              ` : ''}
+
+              <div class="close-text">
+                You can now close this window and start using your X MCP Server
+              </div>
+            </div>
           </body>
         </html>
       `);
