@@ -7,6 +7,7 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { TwitterApi, ApiResponseError } from 'twitter-api-v2';
+import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
@@ -18,6 +19,11 @@ dotenv.config();
 
 // Multi-user mode flag
 const MULTI_USER_MODE = process.env.MULTI_USER_MODE === 'true';
+
+// Initialize Anthropic client for bookmark categorization
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY || '',
+});
 
 // User configuration
 interface User {
@@ -580,7 +586,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'get_uncategorized_bookmarks',
-    description: 'Get bookmarks that have not yet been categorized. Returns only new bookmarks that need to be processed by the AI agent.',
+    description: 'Get bookmarks that have not yet been categorized. Returns only new bookmarks that need to be processed by the AI categorization agent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -593,8 +599,30 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'categorize_bookmark',
+    description: 'Categorize a bookmark using LLM analysis. Extracts topic tags, actionable todos, and metadata for knowledge graph integration.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_id: {
+          type: 'string',
+          description: 'The ID of the tweet/bookmark to categorize',
+        },
+        tweet_text: {
+          type: 'string',
+          description: 'Optional: The tweet text (if not provided, will fetch from API)',
+        },
+        additional_context: {
+          type: 'string',
+          description: 'Optional: Additional context about why this was bookmarked',
+        },
+      },
+      required: ['tweet_id'],
+    },
+  },
+  {
     name: 'mark_bookmarks_categorized',
-    description: 'Mark specific bookmarks as categorized after processing them. This prevents them from appearing in future get_uncategorized_bookmarks calls.',
+    description: 'Mark specific bookmarks as categorized after processing. Prevents them from appearing in future get_uncategorized_bookmarks calls.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -611,7 +639,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'reset_categorized_bookmarks',
-    description: 'Clear all categorized bookmark tracking. Use this to start fresh or if you want to re-process all bookmarks.',
+    description: 'Clear all categorization tracking to start fresh or re-process all bookmarks.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -976,6 +1004,121 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
                 users: bookmarks.includes?.users || [],
                 meta: bookmarks.data.meta,
               }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'categorize_bookmark': {
+        const { tweet_id, tweet_text, additional_context } = args as {
+          tweet_id: string;
+          tweet_text?: string;
+          additional_context?: string;
+        };
+
+        console.error(`[TOOL] 📊 Categorizing bookmark ${tweet_id}...`);
+
+        // Fetch tweet details if text not provided
+        let tweetContent = tweet_text;
+        let tweetData: any = null;
+
+        if (!tweetContent) {
+          console.error(`[TOOL] Fetching tweet details...`);
+          const tweetResponse = await rwClient.v2.singleTweet(tweet_id, {
+            'tweet.fields': ['created_at', 'author_id', 'public_metrics', 'conversation_id', 'entities'],
+          });
+          tweetData = tweetResponse.data;
+          tweetContent = tweetData.text;
+        }
+
+        console.error(`[TOOL] Analyzing tweet with LLM...`);
+
+        // Use Claude to categorize the bookmark
+        const prompt = `You are a knowledge management assistant. Analyze this bookmarked tweet and provide structured categorization for a knowledge graph.
+
+Tweet Content:
+${tweetContent}
+
+${additional_context ? `Additional Context: ${additional_context}\n` : ''}
+${tweetData ? `
+Tweet Metadata:
+- Author ID: ${tweetData.author_id}
+- Created: ${tweetData.created_at}
+- Engagement: ${JSON.stringify(tweetData.public_metrics)}
+` : ''}
+
+Analyze this bookmark and provide:
+
+1. **Topic Tags**: 3-7 relevant topic/category tags (e.g., "machine-learning", "productivity", "web-development")
+2. **Actionable Todos**: Any action items or tasks implied by this content (if none, return empty array)
+3. **Knowledge Graph Metadata**: Structured metadata for graph integration
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "topic_tags": ["tag1", "tag2", "tag3"],
+  "actionable_todos": [
+    {
+      "task": "Description of task",
+      "priority": "high|medium|low",
+      "due_context": "when this should be done (optional)"
+    }
+  ],
+  "metadata": {
+    "content_type": "article|tutorial|opinion|news|resource|tool|announcement|thread|question",
+    "key_concepts": ["concept1", "concept2"],
+    "related_domains": ["domain1", "domain2"],
+    "urgency": "high|medium|low|none",
+    "learning_value": "high|medium|low",
+    "entities": {
+      "people": [],
+      "companies": [],
+      "technologies": [],
+      "tools": []
+    }
+  }
+}`;
+
+        const response = await anthropic.messages.create({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: prompt }],
+        });
+
+        // Extract and parse the JSON response
+        const analysisText = response.content[0].type === 'text' ? response.content[0].text : '';
+        console.error(`[TOOL] LLM response received`);
+
+        let categorization;
+        try {
+          const jsonMatch = analysisText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+          const jsonText = jsonMatch ? jsonMatch[1] : analysisText;
+          categorization = JSON.parse(jsonText.trim());
+        } catch (parseError: any) {
+          console.error(`[TOOL] ⚠️  Failed to parse LLM response:`, parseError.message);
+          throw new Error(`Failed to parse categorization response: ${parseError.message}`);
+        }
+
+        const result = {
+          tweet_id,
+          tweet_text: tweetContent,
+          categorization,
+          analyzed_at: new Date().toISOString(),
+          ...(tweetData && {
+            tweet_metadata: {
+              author_id: tweetData.author_id,
+              created_at: tweetData.created_at,
+              public_metrics: tweetData.public_metrics,
+            },
+          }),
+        };
+
+        console.error(`[TOOL] ✅ Categorization complete - Tags: ${categorization.topic_tags?.join(', ')}`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2),
             },
           ],
         };
