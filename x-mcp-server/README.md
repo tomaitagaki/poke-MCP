@@ -1,173 +1,140 @@
 # X (Twitter) MCP Server
 
-A Model Context Protocol (MCP) server for X (formerly Twitter) API integration. This server provides tools for posting tweets, managing bookmarks, interacting with timelines, and more.
+A Model Context Protocol (MCP) server for X (formerly Twitter) API integration with AI-powered bookmark categorization.
 
-## Features
+## Requirements
 
-- 🐦 **Post tweets** - Create new posts, replies, and threads
-- 📚 **Bookmarks** - Save, retrieve, and manage your bookmarked tweets
-- 🤖 **AI Bookmark Categorization** - Automatically categorize bookmarks with topic tags, actionable todos, and metadata for knowledge graphs
-- 📱 **Timeline** - Access your home timeline and user tweets
-- ❤️ **Likes & Retweets** - Like, unlike, retweet, and unretweet posts
-- 🔍 **Search** - Search for tweets using X search operators
-- 📊 **Tweet Details** - Get detailed information about specific tweets
-- 👥 **Multi-User Support** - Concurrent access for multiple users with API key authentication
+Before you start, you'll need:
 
-## Multi-User Mode
+1. **X Developer Account & App** - https://developer.x.com
+2. **Anthropic API Key** (optional, for AI categorization) - https://console.anthropic.com
 
-This server supports **multi-user mode**, allowing multiple users to concurrently access their X bookmarks through the same server instance. Each user:
-- Has their own API key for secure authentication
-- Uses their own X OAuth credentials
-- Gets isolated token storage and management
-- Can connect simultaneously without conflicts
+## Quick Start
 
-**📖 See [MULTI_USER_SETUP.md](./MULTI_USER_SETUP.md) for detailed setup instructions.**
+### 1. Get X API Credentials
 
-Quick multi-user setup:
-1. Set `MULTI_USER_MODE=true` in `.env`
-2. Create `users.json` from `users.json.example`
-3. Configure each user with unique API keys and X OAuth credentials
-4. Each user authorizes at `/authorize?apiKey=THEIR_API_KEY`
-5. Connect with API key via header or query parameter
+1. Go to [X Developer Portal](https://developer.x.com/en/portal/dashboard)
+2. Create a new Project and App
+3. Go to **App Settings** > **User authentication settings**
+4. Enable **OAuth 2.0** with these settings:
+   - **Type of App**: Web App
+   - **Callback URL**: `http://localhost:3000/callback`
+   - **Website URL**: Any valid URL
+5. Save and copy your **Client ID** and **Client Secret**
 
-## Available Tools
+**Required OAuth 2.0 Scopes** (enabled by default):
+- `tweet.read`, `tweet.write`
+- `users.read`
+- `bookmark.read`, `bookmark.write`
+- `like.read`, `like.write`
+- `offline.access` (for token refresh)
 
-### Post Management
-- `post_tweet` - Post a new tweet to your account
-- `get_tweet` - Get details about a specific tweet
-- `search_tweets` - Search for tweets using a query
+### 2. Install & Configure
 
-### Bookmarks
-- `get_bookmarks` - Get your saved/bookmarked tweets (up to 800 most recent)
-- `add_bookmark` - Add a tweet to your bookmarks
-- `remove_bookmark` - Remove a tweet from your bookmarks
-- `get_uncategorized_bookmarks` - Get only bookmarks that haven't been categorized yet (for AI processing workflows)
-- `mark_bookmarks_categorized` - Mark bookmarks as categorized after processing
-- `reset_categorized_bookmarks` - Clear all categorization tracking to start fresh
-
-### Timeline
-- `get_home_timeline` - Get tweets from accounts you follow
-- `get_user_tweets` - Get tweets from your own timeline or another user
-
-### Engagement
-- `like_tweet` - Like a tweet
-- `unlike_tweet` - Unlike a tweet
-- `retweet` - Retweet a tweet
-- `unretweet` - Remove a retweet
-
-## Setup
-
-### Prerequisites
-
-1. **X Developer Account** - Sign up at https://developer.x.com
-2. **Create an X App** in the Developer Portal
-3. **Enable OAuth 2.0** and generate credentials:
-   - Client ID
-   - Client Secret
-
-### Getting X API Credentials
-
-1. Go to https://developer.x.com/en/portal/dashboard
-2. Create a new Project and App (or use an existing one)
-3. Navigate to your App settings → Keys and Tokens
-4. Enable OAuth 2.0 in User authentication settings
-5. Copy:
-   - Client ID (X_CLIENT_ID)
-   - Client Secret (X_CLIENT_SECRET)
-6. Set callback URL: `http://localhost:3000/callback` (for local dev)
-
-### Installation
-
-1. Clone this repository:
 ```bash
-git clone <your-repo-url>
+# Clone and install
+git clone <repo-url>
 cd x-mcp-server
-```
-
-2. Install dependencies:
-```bash
 npm install
-```
 
-3. Create a `.env` file from the example:
-```bash
+# Create environment file
 cp .env.example .env
 ```
 
-4. Edit `.env` and add your X OAuth 2.0 credentials:
+Edit `.env` with your credentials:
+
 ```env
-X_CLIENT_ID=your_client_id_here
-X_CLIENT_SECRET=your_client_secret_here
+# Required - X OAuth 2.0 credentials
+X_CLIENT_ID=your_client_id
+X_CLIENT_SECRET=your_client_secret
 CALLBACK_URL=http://localhost:3000/callback
 
-# Optional: For bookmark categorization feature
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
+# Optional - For AI bookmark categorization
+ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
-To use the `categorize_bookmark` tool, get your Anthropic API key from https://console.anthropic.com/
+### 3. Build & Run
 
-5. Build the TypeScript code:
 ```bash
 npm run build
-```
-
-6. Run the server:
-```bash
 npm start
 ```
 
-7. **Authenticate**: Visit `http://localhost:3000/authorize` in your browser to authorize the app. Tokens will be saved automatically to `.tokens.json`.
+### 4. Authenticate with X
 
-## Deployment on Render.com
+1. Open http://localhost:3000/authorize in your browser
+2. Sign in to X and authorize the app
+3. Tokens are saved automatically to `.tokens.json`
 
-### Quick Deploy
+You're ready to use the MCP server!
 
-1. **Fork/Push this repository to GitHub**
+## Available Tools
 
-2. **Create a new Web Service on Render**:
-   - Go to https://render.com
-   - Click "New +" → "Web Service"
-   - Connect your GitHub repository
-   - Select the `x-mcp-server` directory
+### Tweets
+- `post_tweet` - Post tweets and replies
+- `get_tweet` - Get tweet details
+- `search_tweets` - Search tweets
 
-3. **Configure the service**:
-   - **Name**: `x-mcp-server` (or your preferred name)
-   - **Environment**: `Node`
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-   - **Plan**: Free or Starter
+### Bookmarks
+- `get_bookmarks` - Get saved bookmarks
+- `add_bookmark` / `remove_bookmark` - Manage bookmarks
+- `get_uncategorized_bookmarks` - Get unprocessed bookmarks
+- `categorize_bookmark` - AI categorization with Claude
+- `mark_bookmarks_categorized` - Mark as processed
+- `reset_categorized_bookmarks` - Reset tracking
 
-4. **Add Environment Variables**:
-   Go to Environment tab and add:
-   - `X_CLIENT_ID` - Your X OAuth 2.0 Client ID
-   - `X_CLIENT_SECRET` - Your X OAuth 2.0 Client Secret
-   - `CALLBACK_URL` - Your callback URL (e.g., `https://your-app.onrender.com/callback`)
-   - `NODE_ENV` - Set to `production`
+### Timeline & Engagement
+- `get_home_timeline` - Home feed
+- `get_user_tweets` - User timeline
+- `like_tweet` / `unlike_tweet`
+- `retweet` / `unretweet`
 
-5. **Deploy**: Click "Create Web Service"
+## AI Bookmark Categorization
 
-6. **Authenticate**: After deployment, visit `https://your-app.onrender.com/authorize` to authorize the app
+The `categorize_bookmark` tool uses Claude to analyze bookmarks and extract:
 
-### Using render.yaml (Infrastructure as Code)
+- **Topic tags** - 3-7 relevant categories
+- **Actionable todos** - Tasks with priorities
+- **Metadata** - Content type, key concepts, entities, urgency
 
-This repo includes a `render.yaml` at the root for automated deployment:
-
-```bash
-# From the repo root, deploy using Render
-# Render will auto-detect render.yaml and use rootDir: x-mcp-server
+**Example:**
+```json
+{
+  "name": "categorize_bookmark",
+  "arguments": {
+    "tweet_id": "1234567890",
+    "additional_context": "For ML project"
+  }
+}
 ```
 
-The `render.yaml` is located at `/render.yaml` (repo root) and points to this subdirectory using `rootDir: x-mcp-server`.
+**Workflow for batch processing:**
+1. `get_uncategorized_bookmarks` - Fetch new bookmarks
+2. `categorize_bookmark` - Process each one
+3. `mark_bookmarks_categorized` - Mark as done
 
-### Docker Deployment
+See [BOOKMARK_CATEGORIZATION.md](./BOOKMARK_CATEGORIZATION.md) for detailed documentation.
 
-You can also deploy using Docker:
+## Deployment
+
+### Render.com
+
+1. Push to GitHub
+2. Create Web Service on Render
+3. Set **Root Directory**: `x-mcp-server`
+4. **Build Command**: `npm install && npm run build`
+5. **Start Command**: `npm start`
+6. Add environment variables:
+   - `X_CLIENT_ID`
+   - `X_CLIENT_SECRET`
+   - `CALLBACK_URL` = `https://your-app.onrender.com/callback`
+   - `ANTHROPIC_API_KEY` (optional)
+7. Deploy, then visit `/authorize` to authenticate
+
+### Docker
 
 ```bash
-# Build the image
 docker build -t x-mcp-server .
-
-# Run the container
 docker run -d \
   -e X_CLIENT_ID=your_client_id \
   -e X_CLIENT_SECRET=your_client_secret \
@@ -176,173 +143,40 @@ docker run -d \
   x-mcp-server
 ```
 
-## Bookmark Categorization Workflow
+## Multi-User Mode
 
-The server includes a bookmark categorization system designed for AI agents to periodically process new bookmarks:
-
-1. **Poll for uncategorized bookmarks**: Your AI agent calls `get_uncategorized_bookmarks` to fetch only new bookmarks that haven't been processed
-2. **Process bookmarks**: The AI categorizes/organizes/processes the bookmarks (e.g., extract key points, tag topics, save to database)
-3. **Mark as processed**: Call `mark_bookmarks_categorized` with the tweet IDs to mark them as categorized
-4. **Repeat**: On the next poll, those bookmarks won't appear again
-
-**Example workflow:**
-```json
-// Step 1: Get uncategorized bookmarks
-{
-  "name": "get_uncategorized_bookmarks",
-  "arguments": { "max_results": 50 }
-}
-// Returns: { uncategorized_bookmarks: [...], uncategorized_count: 12 }
-
-// Step 2: Process them (your AI logic here)
-
-// Step 3: Mark them as categorized
-{
-  "name": "mark_bookmarks_categorized",
-  "arguments": {
-    "tweet_ids": ["1234567890", "0987654321"]
-  }
-}
-// Returns: { success: true, newly_marked: 2, total_categorized: 142 }
-```
-
-**Storage**: Categorization tracking is stored in `.categorized-bookmarks.json` (or per-user files in multi-user mode) and persists across server restarts.
-
-## Usage Examples
-
-### Connecting to Claude Desktop
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-
-```json
-{
-  "mcpServers": {
-    "x-api": {
-      "command": "node",
-      "args": ["/path/to/x-mcp-server/dist/index.js"],
-      "env": {
-        "X_CLIENT_ID": "your_client_id",
-        "X_CLIENT_SECRET": "your_client_secret",
-        "CALLBACK_URL": "http://localhost:3000/callback"
-      }
-    }
-  }
-}
-```
-
-### Example Tool Calls
-
-**Post a tweet:**
-```json
-{
-  "name": "post_tweet",
-  "arguments": {
-    "text": "Hello from my MCP server! 🚀"
-  }
-}
-```
-
-**Get your bookmarks:**
-```json
-{
-  "name": "get_bookmarks",
-  "arguments": {
-    "max_results": 20
-  }
-}
-```
-
-**Search tweets:**
-```json
-{
-  "name": "search_tweets",
-  "arguments": {
-    "query": "MCP server",
-    "max_results": 10
-  }
-}
-```
-
-**Reply to a tweet:**
-```json
-{
-  "name": "post_tweet",
-  "arguments": {
-    "text": "Great point!",
-    "reply_to_tweet_id": "1234567890"
-  }
-}
-```
-
-**Categorize a bookmark with AI:**
-```json
-{
-  "name": "categorize_bookmark",
-  "arguments": {
-    "tweet_id": "1234567890",
-    "additional_context": "Saved for upcoming ML project"
-  }
-}
-```
-
-Returns topic tags, actionable todos, and metadata for knowledge graph integration. [Learn more](./BOOKMARK_CATEGORIZATION.md)
+For multiple users sharing one server instance, see [MULTI_USER_SETUP.md](./MULTI_USER_SETUP.md).
 
 ## API Rate Limits
 
-Be aware of X API rate limits:
-- **Bookmarks GET**: 180 requests per 15 minutes
-- **Bookmarks POST/DELETE**: 50 requests per 15 minutes
-- **Timeline**: Varies by endpoint
-- **Search**: Varies by access level
-
-## Development
-
-### Build
-```bash
-npm run build
-```
-
-### Watch mode
-```bash
-npm run watch
-```
-
-### Run locally
-```bash
-npm run dev
-```
-
-## Architecture
-
-This MCP server uses:
-- **@modelcontextprotocol/sdk** - MCP protocol implementation
-- **twitter-api-v2** - X API v2 client library
-- **@anthropic-ai/sdk** - Claude AI for bookmark categorization
-- **TypeScript** - Type-safe development
-- **SSE Transport** - Server-Sent Events for MCP communication
+- **Bookmarks GET**: 180 requests / 15 min
+- **Bookmarks POST/DELETE**: 50 requests / 15 min
+- **Timeline/Search**: Varies by endpoint and access level
 
 ## Troubleshooting
 
-### Authentication Errors
-- Verify your OAuth 2.0 Client ID and Secret are correct
-- Ensure your X App has OAuth 2.0 enabled
-- Check that your app has Read and Write permissions
-- Visit `/authorize` endpoint to authenticate if tokens are missing
-- Verify callback URL matches your app's configured callback URL
+### "No OAuth 2.0 access token available"
+Visit `/authorize` to authenticate.
 
-### Rate Limit Errors
-- Implement exponential backoff in your client
-- Monitor your usage in the X Developer Portal
-- Consider upgrading your API access level
+### 403 Forbidden
+- Check OAuth 2.0 is enabled in X Developer Portal
+- Verify app has Read and Write permissions
+- Re-authenticate at `/authorize`
 
-### Connection Issues
-- Verify the server is running: `npm start`
-- Check environment variables are set correctly
-- Review logs for detailed error messages
+### 429 Rate Limited
+Wait 15 minutes or reduce request frequency.
 
-## Contributing
+### Callback URL mismatch
+Ensure `CALLBACK_URL` exactly matches what's configured in X Developer Portal.
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
+## Endpoints
+
+- `GET /health` - Server status
+- `GET /authorize` - Start OAuth flow
+- `GET /callback` - OAuth callback
+- `GET /sse` - MCP SSE connection
+- `POST /message` - MCP messages
+- `GET /tools` - List available tools
 
 ## License
 
@@ -350,6 +184,6 @@ MIT
 
 ## Resources
 
-- [X API Documentation](https://developer.x.com/en/docs/x-api)
+- [X API Docs](https://developer.x.com/en/docs/x-api)
 - [Model Context Protocol](https://modelcontextprotocol.io)
-- [twitter-api-v2 Library](https://github.com/PLhery/node-twitter-api-v2)
+- [Anthropic API](https://docs.anthropic.com)
