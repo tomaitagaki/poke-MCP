@@ -49,8 +49,17 @@ interface TokenStore {
   expiresAt?: number; // Timestamp when token expires
 }
 
+// Bookmark categorization tracking
+interface CategorizedBookmarksStore {
+  categorizedIds: string[]; // Array of tweet IDs that have been categorized
+  lastUpdated?: number; // Timestamp of last update
+}
+
 // Load users from users.json file
 let userStore: UserStore = { users: [] };
+
+// Categorized bookmarks store - Map of userId to CategorizedBookmarksStore
+const categorizedBookmarksStores: Map<string, CategorizedBookmarksStore> = new Map();
 
 async function loadUsers(): Promise<UserStore> {
   if (!MULTI_USER_MODE) {
@@ -194,6 +203,54 @@ async function saveTokens(tokens: TokenStore, userId?: string): Promise<void> {
   }
 }
 
+// Get categorized bookmarks file path for a specific user
+function getCategorizedBookmarksFilePath(userId?: string): string {
+  const basePath = process.env.RENDER_DISK_PATH
+    ? process.env.RENDER_DISK_PATH
+    : process.cwd();
+
+  if (userId) {
+    return join(basePath, `.categorized-bookmarks-${userId}.json`);
+  }
+  // Fallback for single-user mode
+  return join(basePath, '.categorized-bookmarks.json');
+}
+
+// Load categorized bookmarks from local file
+async function loadCategorizedBookmarks(userId?: string): Promise<CategorizedBookmarksStore> {
+  const filePath = getCategorizedBookmarksFilePath(userId);
+
+  try {
+    const data = await fs.readFile(filePath, 'utf-8');
+    const store = JSON.parse(data) as CategorizedBookmarksStore;
+    const userLabel = userId ? `for user ${userId}` : '';
+    console.error(`[BOOKMARKS] ✅ Loaded ${store.categorizedIds.length} categorized bookmark IDs ${userLabel}`);
+    return store;
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      // File doesn't exist, return empty store
+      return { categorizedIds: [] };
+    }
+    console.error('[BOOKMARKS] ⚠️  Error loading categorized bookmarks:', error.message);
+    return { categorizedIds: [] };
+  }
+}
+
+// Save categorized bookmarks to local file
+async function saveCategorizedBookmarks(store: CategorizedBookmarksStore, userId?: string): Promise<void> {
+  const filePath = getCategorizedBookmarksFilePath(userId);
+
+  try {
+    store.lastUpdated = Date.now();
+    await fs.writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
+    const userLabel = userId ? `for user ${userId}` : '';
+    console.error(`[BOOKMARKS] ✅ Saved ${store.categorizedIds.length} categorized bookmark IDs ${userLabel}`);
+  } catch (error: any) {
+    console.error('[BOOKMARKS] ❌ Error saving categorized bookmarks:', error.message);
+    throw error;
+  }
+}
+
 // Initialize token stores - Map of userId to TokenStore
 const tokenStores: Map<string, TokenStore> = new Map();
 
@@ -201,20 +258,26 @@ const tokenStores: Map<string, TokenStore> = new Map();
 loadUsers().then(async (store) => {
   userStore = store;
 
-  // In multi-user mode, pre-load tokens for all users
+  // In multi-user mode, pre-load tokens and categorized bookmarks for all users
   if (MULTI_USER_MODE) {
     for (const user of userStore.users) {
       try {
         const tokens = await loadTokens(user.userId);
         tokenStores.set(user.userId, tokens);
+
+        const categorizedBookmarks = await loadCategorizedBookmarks(user.userId);
+        categorizedBookmarksStores.set(user.userId, categorizedBookmarks);
       } catch (err) {
-        console.error(`[AUTH] Failed to load tokens for user ${user.userId}:`, err);
+        console.error(`[AUTH] Failed to load data for user ${user.userId}:`, err);
       }
     }
   } else {
-    // Single-user mode - load tokens without userId
+    // Single-user mode - load tokens and categorized bookmarks without userId
     const tokens = await loadTokens();
     tokenStores.set('default', tokens);
+
+    const categorizedBookmarks = await loadCategorizedBookmarks();
+    categorizedBookmarksStores.set('default', categorizedBookmarks);
   }
 }).catch(err => {
   console.error('[AUTH] Failed to load users on startup:', err);
@@ -522,25 +585,42 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: 'categorize_bookmark',
-    description: 'Categorize a bookmark using LLM analysis. Extracts topic tags, actionable todos, and metadata for knowledge graph integration.',
+    name: 'get_uncategorized_bookmarks',
+    description: 'Get bookmarks that have not yet been categorized. Returns only new bookmarks that need to be processed by the AI agent.',
     inputSchema: {
       type: 'object',
       properties: {
-        tweet_id: {
-          type: 'string',
-          description: 'The ID of the tweet/bookmark to categorize',
-        },
-        tweet_text: {
-          type: 'string',
-          description: 'Optional: The tweet text (if not provided, will fetch from API)',
-        },
-        additional_context: {
-          type: 'string',
-          description: 'Optional: Additional context about why this was bookmarked',
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of bookmarks to return (5-100, default 50)',
+          default: 50,
         },
       },
-      required: ['tweet_id'],
+    },
+  },
+  {
+    name: 'mark_bookmarks_categorized',
+    description: 'Mark specific bookmarks as categorized after processing them. This prevents them from appearing in future get_uncategorized_bookmarks calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tweet_ids: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description: 'Array of tweet IDs to mark as categorized',
+        },
+      },
+      required: ['tweet_ids'],
+    },
+  },
+  {
+    name: 'reset_categorized_bookmarks',
+    description: 'Clear all categorized bookmark tracking. Use this to start fresh or if you want to re-process all bookmarks.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
 ];
@@ -858,133 +938,120 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         };
       }
 
-      case 'categorize_bookmark': {
-        const { tweet_id, tweet_text, additional_context } = args as {
-          tweet_id: string;
-          tweet_text?: string;
-          additional_context?: string;
+      case 'get_uncategorized_bookmarks': {
+        const { max_results = 50 } = args as {
+          max_results?: number;
         };
 
-        console.error(`[TOOL] 📊 Categorizing bookmark ${tweet_id}...`);
+        console.error(`[TOOL] 📚 Getting uncategorized bookmarks (max_results: ${max_results})...`);
 
-        // Fetch tweet details if text not provided
-        let tweetContent = tweet_text;
-        let tweetData: any = null;
-
-        if (!tweetContent) {
-          console.error(`[TOOL] Fetching tweet details...`);
-          const tweetResponse = await rwClient.v2.singleTweet(tweet_id, {
-            'tweet.fields': ['created_at', 'author_id', 'public_metrics', 'conversation_id', 'entities'],
-          });
-          tweetData = tweetResponse.data;
-          tweetContent = tweetData.data.text;
+        // Load the categorized bookmarks store for this user
+        let categorizedStore = categorizedBookmarksStores.get(userId);
+        if (!categorizedStore) {
+          categorizedStore = await loadCategorizedBookmarks(userId !== 'default' ? userId : undefined);
+          categorizedBookmarksStores.set(userId, categorizedStore);
         }
 
-        console.error(`[TOOL] Analyzing tweet with LLM...`);
+        const categorizedIds = new Set(categorizedStore.categorizedIds);
+        console.error(`[TOOL] 📊 Currently have ${categorizedIds.size} categorized bookmark IDs`);
 
-        // Use Claude to categorize the bookmark
-        const prompt = `You are a knowledge management assistant. Analyze this bookmarked tweet and provide structured categorization for a knowledge graph.
-
-Tweet Content:
-${tweetContent}
-
-${additional_context ? `Additional Context: ${additional_context}\n` : ''}
-${tweetData ? `
-Tweet Metadata:
-- Author ID: ${tweetData.data.author_id}
-- Created: ${tweetData.data.created_at}
-- Engagement: ${JSON.stringify(tweetData.data.public_metrics)}
-` : ''}
-
-Please analyze this bookmark and provide:
-
-1. **Topic Tags**: 3-7 relevant topic/category tags (e.g., "machine-learning", "productivity", "web-development")
-2. **Actionable Todos**: Any action items or tasks implied by this content (if none, return empty array)
-3. **Knowledge Graph Metadata**: Structured metadata for graph integration including:
-   - content_type: The type of content (article, tutorial, opinion, news, resource, tool, etc.)
-   - key_concepts: Main concepts or themes (3-5 items)
-   - related_domains: Related knowledge domains
-   - urgency: How time-sensitive this is (high, medium, low, none)
-   - learning_value: Educational value (high, medium, low)
-   - entities: Any specific people, companies, technologies, or tools mentioned
-
-Respond ONLY with valid JSON in this exact format:
-{
-  "topic_tags": ["tag1", "tag2", "tag3"],
-  "actionable_todos": [
-    {
-      "task": "Description of task",
-      "priority": "high|medium|low",
-      "due_context": "when this should be done (optional)"
-    }
-  ],
-  "metadata": {
-    "content_type": "string",
-    "key_concepts": ["concept1", "concept2"],
-    "related_domains": ["domain1", "domain2"],
-    "urgency": "high|medium|low|none",
-    "learning_value": "high|medium|low",
-    "entities": {
-      "people": ["person1"],
-      "companies": ["company1"],
-      "technologies": ["tech1"],
-      "tools": ["tool1"]
-    }
-  }
-}`;
-
-        const response = await anthropic.messages.create({
-          model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 2000,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
+        // Fetch bookmarks from X API
+        const bookmarks = await rwClient.v2.bookmarks({
+          max_results: Math.min(Math.max(max_results, 5), 100),
+          'tweet.fields': ['created_at', 'author_id', 'public_metrics', 'text'],
+          expansions: ['author_id'],
+          'user.fields': ['username', 'name'],
         });
 
-        // Extract the JSON response
-        const analysisText = response.content[0].type === 'text' ? response.content[0].text : '';
-        console.error(`[TOOL] LLM response received`);
+        // Filter out already categorized bookmarks
+        const uncategorizedBookmarks = (bookmarks.data.data || []).filter(
+          tweet => !categorizedIds.has(tweet.id)
+        );
 
-        // Parse the JSON response
-        let categorization;
-        try {
-          // Extract JSON from markdown code blocks if present
-          const jsonMatch = analysisText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-          const jsonText = jsonMatch ? jsonMatch[1] : analysisText;
-          categorization = JSON.parse(jsonText.trim());
-        } catch (parseError: any) {
-          console.error(`[TOOL] ⚠️  Failed to parse LLM response as JSON:`, parseError.message);
-          console.error(`[TOOL] Raw response:`, analysisText);
-          throw new Error(`Failed to parse categorization response: ${parseError.message}`);
-        }
-
-        // Combine with original tweet data
-        const result = {
-          tweet_id,
-          tweet_text: tweetContent,
-          categorization,
-          analyzed_at: new Date().toISOString(),
-          ...(tweetData && {
-            tweet_metadata: {
-              author_id: tweetData.data.author_id,
-              created_at: tweetData.data.created_at,
-              public_metrics: tweetData.data.public_metrics,
-            },
-          }),
-        };
-
-        console.error(`[TOOL] ✅ Categorization complete`);
-        console.error(`[TOOL] Tags: ${categorization.topic_tags?.join(', ')}`);
-        console.error(`[TOOL] Todos: ${categorization.actionable_todos?.length || 0}`);
+        console.error(`[TOOL] ✅ Found ${uncategorizedBookmarks.length} uncategorized bookmarks out of ${bookmarks.data.data?.length || 0} total`);
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(result, null, 2),
+              text: JSON.stringify({
+                uncategorized_bookmarks: uncategorizedBookmarks,
+                total_fetched: bookmarks.data.data?.length || 0,
+                uncategorized_count: uncategorizedBookmarks.length,
+                already_categorized_count: categorizedIds.size,
+                users: bookmarks.includes?.users || [],
+                meta: bookmarks.data.meta,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'mark_bookmarks_categorized': {
+        const { tweet_ids } = args as { tweet_ids: string[] };
+
+        console.error(`[TOOL] ✏️  Marking ${tweet_ids.length} bookmarks as categorized...`);
+
+        // Load the categorized bookmarks store for this user
+        let categorizedStore = categorizedBookmarksStores.get(userId);
+        if (!categorizedStore) {
+          categorizedStore = await loadCategorizedBookmarks(userId !== 'default' ? userId : undefined);
+          categorizedBookmarksStores.set(userId, categorizedStore);
+        }
+
+        // Add new IDs to the set (avoiding duplicates)
+        const initialCount = categorizedStore.categorizedIds.length;
+        const categorizedSet = new Set(categorizedStore.categorizedIds);
+
+        for (const id of tweet_ids) {
+          categorizedSet.add(id);
+        }
+
+        categorizedStore.categorizedIds = Array.from(categorizedSet);
+        const newlyAdded = categorizedStore.categorizedIds.length - initialCount;
+
+        // Save to file
+        await saveCategorizedBookmarks(categorizedStore, userId !== 'default' ? userId : undefined);
+
+        console.error(`[TOOL] ✅ Marked ${newlyAdded} new bookmarks as categorized (${tweet_ids.length - newlyAdded} were already categorized)`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                newly_marked: newlyAdded,
+                already_marked: tweet_ids.length - newlyAdded,
+                total_categorized: categorizedStore.categorizedIds.length,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'reset_categorized_bookmarks': {
+        console.error(`[TOOL] 🔄 Resetting all categorized bookmarks...`);
+
+        // Reset the store
+        const emptyStore: CategorizedBookmarksStore = {
+          categorizedIds: [],
+          lastUpdated: Date.now(),
+        };
+
+        categorizedBookmarksStores.set(userId, emptyStore);
+        await saveCategorizedBookmarks(emptyStore, userId !== 'default' ? userId : undefined);
+
+        console.error(`[TOOL] ✅ All categorized bookmarks have been reset`);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: true,
+                message: 'All categorized bookmarks tracking has been reset. All bookmarks will now appear as uncategorized.',
+              }, null, 2),
             },
           ],
         };

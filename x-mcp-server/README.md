@@ -41,7 +41,9 @@ Quick multi-user setup:
 - `get_bookmarks` - Get your saved/bookmarked tweets (up to 800 most recent)
 - `add_bookmark` - Add a tweet to your bookmarks
 - `remove_bookmark` - Remove a tweet from your bookmarks
-- `categorize_bookmark` - Categorize a bookmark with LLM analysis (tags, todos, metadata) - **[See Guide](./BOOKMARK_CATEGORIZATION.md)**
+- `get_uncategorized_bookmarks` - Get only bookmarks that haven't been categorized yet (for AI processing workflows)
+- `mark_bookmarks_categorized` - Mark bookmarks as categorized after processing
+- `reset_categorized_bookmarks` - Clear all categorization tracking to start fresh
 
 ### Timeline
 - `get_home_timeline` - Get tweets from accounts you follow
@@ -173,6 +175,38 @@ docker run -d \
   -p 3000:3000 \
   x-mcp-server
 ```
+
+## Bookmark Categorization Workflow
+
+The server includes a bookmark categorization system designed for AI agents to periodically process new bookmarks:
+
+1. **Poll for uncategorized bookmarks**: Your AI agent calls `get_uncategorized_bookmarks` to fetch only new bookmarks that haven't been processed
+2. **Process bookmarks**: The AI categorizes/organizes/processes the bookmarks (e.g., extract key points, tag topics, save to database)
+3. **Mark as processed**: Call `mark_bookmarks_categorized` with the tweet IDs to mark them as categorized
+4. **Repeat**: On the next poll, those bookmarks won't appear again
+
+**Example workflow:**
+```json
+// Step 1: Get uncategorized bookmarks
+{
+  "name": "get_uncategorized_bookmarks",
+  "arguments": { "max_results": 50 }
+}
+// Returns: { uncategorized_bookmarks: [...], uncategorized_count: 12 }
+
+// Step 2: Process them (your AI logic here)
+
+// Step 3: Mark them as categorized
+{
+  "name": "mark_bookmarks_categorized",
+  "arguments": {
+    "tweet_ids": ["1234567890", "0987654321"]
+  }
+}
+// Returns: { success: true, newly_marked: 2, total_categorized: 142 }
+```
+
+**Storage**: Categorization tracking is stored in `.categorized-bookmarks.json` (or per-user files in multi-user mode) and persists across server restarts.
 
 ## Usage Examples
 
